@@ -15,7 +15,6 @@ _TYPE_TO_FILENAME = {
     "PHARMACY_BILL": "pharmacy_bill.jpg",
     "DENTAL_REPORT": "dental_report.jpg",
     "DISCHARGE_SUMMARY": "discharge_summary.jpg",
-    "DIAGNOSTIC_REPORT": "diagnostic_report.jpg",
 }
 
 

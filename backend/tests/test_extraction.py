@@ -37,7 +37,7 @@ def _fake_result(
 def _doc(
     classified_type: Literal[
         "PRESCRIPTION", "HOSPITAL_BILL", "LAB_REPORT", "PHARMACY_BILL",
-        "DENTAL_REPORT", "DISCHARGE_SUMMARY", "DIAGNOSTIC_REPORT", "UNKNOWN",
+        "DENTAL_REPORT", "DISCHARGE_SUMMARY", "UNKNOWN",
     ] = "PRESCRIPTION",
     patient_name: str | None = "Rajesh Kumar",
     confidence: float = 0.9,

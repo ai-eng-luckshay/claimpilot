@@ -21,8 +21,7 @@ class _LineItem(BaseModel):
 class _DocumentExtraction(BaseModel):
     classified_type: Literal[
         "PRESCRIPTION", "HOSPITAL_BILL", "LAB_REPORT",
-        "PHARMACY_BILL", "DENTAL_REPORT", "DISCHARGE_SUMMARY",
-        "DIAGNOSTIC_REPORT", "UNKNOWN",
+        "PHARMACY_BILL", "DENTAL_REPORT", "DISCHARGE_SUMMARY", "UNKNOWN",
     ]
     patient_name: str | None = None
     doctor_name: str | None = None

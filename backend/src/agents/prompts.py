@@ -29,8 +29,11 @@ HOSPITAL_BILL — A billing or invoice document showing itemized charges and a t
 PRESCRIPTION — A doctor's written instruction for medicines or tests. Contains Rx, drug names,
   dosage, doctor registration number, and doctor's signature/stamp.
 
-LAB_REPORT — A laboratory test result document. Contains test name, numeric results, reference ranges,
-  and a lab accreditation stamp. Not a billing document.
+LAB_REPORT — Any clinical test or diagnostic result document. Use this for ALL of the following:
+  blood tests, urine analysis, biopsy results, MRI reports, CT scan reports, X-ray reports,
+  ultrasound reports, ECG reports, PET scan reports, and any other lab or imaging result.
+  Key signal: contains test/finding results and is NOT a billing document.
+  ⚠ Use LAB_REPORT for MRI, CT, and ultrasound reports — there is no DIAGNOSTIC_REPORT type.
 
 PHARMACY_BILL — A pharmacy receipt/invoice specifically for drugs and medicines purchased.
   Key signals: drug names with quantities and prices, pharmacy licence number.
@@ -41,9 +44,6 @@ DENTAL_REPORT — A CLINICAL dental examination or treatment record (not a billi
 
 DISCHARGE_SUMMARY — A hospital discharge document summarising an inpatient admission, diagnosis,
   treatment given, and follow-up instructions. Issued on patient discharge.
-
-DIAGNOSTIC_REPORT — A clinical report of a diagnostic procedure (e.g., MRI, CT scan, ultrasound,
-  ECG, X-ray, PET scan). Contains findings and radiologist/technician interpretation. Not a bill.
 
 UNKNOWN — Use only when the document is illegible, too damaged to classify, or clearly does not
   belong to any category above.

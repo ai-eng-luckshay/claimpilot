@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     langchain_tracing_v2: str = "false"
     langchain_project: str = "claimpilot"
 
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/claimpilot"
+    database_url: str = ""
     environment: str = "dev"
 
     api_base_url: str = "http://localhost:8000"
