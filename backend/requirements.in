@@ -1,0 +1,18 @@
+# Backend direct dependencies (unpinned)
+# Run: pip-compile requirements.in > requirements.txt to pin versions
+
+fastapi
+uvicorn[standard]
+psycopg2-binary
+sqlalchemy
+alembic
+langchain-google-genai
+langgraph
+langsmith
+opencv-python-headless
+pillow
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+pytest

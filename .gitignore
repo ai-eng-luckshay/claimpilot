@@ -1,0 +1,41 @@
+# Environment — real values, never commit
+.env
+.env.dev
+
+# .env.example is committed intentionally — keys only, no values
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE — commit project config, ignore personal settings
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic (keep versions, ignore local db state)
+# migrations/versions/ is tracked intentionally
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Raw uploaded claim documents — ephemeral, not committed
+backend/uploads/
+
+# AI Coding Helper
+.claude

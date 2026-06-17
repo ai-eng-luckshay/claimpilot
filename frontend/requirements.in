@@ -1,0 +1,7 @@
+# Frontend direct dependencies (unpinned)
+# Run: pip-compile requirements.in > requirements.txt to pin versions
+
+streamlit
+httpx
+python-dotenv
+pandas
