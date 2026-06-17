@@ -1,43 +1,44 @@
-project:
-  name: ClaimPilot
+projects:
+  - name: ClaimPilot
+    environments:
+    - name: prod
+      services:
+        - type: web
+          name: claimpilot-api
+          env: python
+          plan: free
+          buildCommand: pip install -r backend/requirements.txt
+          startCommand: uvicorn backend.src.main:app --host 0.0.0.0 --port $PORT
+          envVars:
+            - key: DATABASE_URL
+              fromDatabase:
+                name: claimpilot-db
+                property: connectionString
+            - key: GOOGLE_API_KEY
+              sync: false
+            - key: LANGSMITH_API_KEY
+              sync: false
+            - key: LANGCHAIN_TRACING_V2
+              value: "true"
+            - key: LANGCHAIN_PROJECT
+              value: claimpilot
+            - key: ENVIRONMENT
+              value: prod
 
-services:
-  - type: web
-    name: claimpilot-api
-    env: python
-    plan: free
-    buildCommand: pip install -r backend/requirements.txt
-    startCommand: uvicorn backend.src.main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: claimpilot-db
-          property: connectionString
-      - key: GOOGLE_API_KEY
-        sync: false
-      - key: LANGSMITH_API_KEY
-        sync: false
-      - key: LANGCHAIN_TRACING_V2
-        value: "true"
-      - key: LANGCHAIN_PROJECT
-        value: claimpilot
-      - key: ENVIRONMENT
-        value: prod
+        - type: web
+          name: claimpilot-ui
+          env: python
+          plan: free
+          buildCommand: pip install -r frontend/requirements.txt
+          startCommand: >
+            streamlit run frontend/app.py
+            --server.port $PORT
+            --server.address 0.0.0.0
+            --server.headless true
+          envVars:
+            - key: API_BASE_URL
+              sync: false    # set manually: https://claimpilot-api.onrender.com
 
-  - type: web
-    name: claimpilot-ui
-    env: python
-    plan: free
-    buildCommand: pip install -r frontend/requirements.txt
-    startCommand: >
-      streamlit run frontend/app.py
-      --server.port $PORT
-      --server.address 0.0.0.0
-      --server.headless true
-    envVars:
-      - key: API_BASE_URL
-        sync: false    # set manually: https://claimpilot-api.onrender.com
-
-databases:
-  - name: claimpilot-db
-    plan: free
+      databases:
+        - name: claimpilot-db
+          plan: free
