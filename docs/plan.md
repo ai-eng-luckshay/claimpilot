@@ -83,21 +83,33 @@ This is a real problem Plum operates today, done manually. The assignment is to 
 ```
 Plum - ClaimPilot/
 ├── backend/                        # FastAPI service
-│   ├── __init__.py
 │   ├── requirements.in             # unpinned deps (edit this)
 │   ├── requirements.txt            # pinned deps (pip-compile output)
 │   └── src/
-│       ├── __init__.py
-│       ├── config.py               # pydantic-settings, loads .env.dev
 │       ├── main.py                 # FastAPI app, health check, CORS
-│       ├── models/                 # SQLAlchemy DB models (Day 2)
-│       ├── schemas/                # Pydantic request/response models (Day 2)
-│       ├── agents/                 # LangGraph agents (Day 2-4)
-│       ├── pipeline/               # LangGraph graph + state (Day 2)
-│       └── services/               # policy loader, Gemini client (Day 2)
+│       ├── agents/
+│       │   ├── blur_gate.py            # blur_gate node (OpenCV)
+│       │   ├── extraction.py           # extract_documents node (Gemini call 1)
+│       │   ├── patient_name_check.py   # reject_patient_mismatch node
+│       │   ├── validate_documents.py   # validate_documents node (pure Python)
+│       │   ├── adjudicate.py           # adjudicate_claim node (Gemini call 2)
+│       │   ├── save_to_db.py           # save_to_db node (retry + DLQ stub)
+│       │   └── prompts/
+│       │       ├── extraction.py       # extraction LLM prompt
+│       │       └── adjudication.py     # adjudication LLM prompt
+│       ├── pipeline/
+│       │   ├── graph.py            # LangGraph wiring + conditional edges
+│       │   └── state.py            # ClaimState TypedDict
+│       ├── schemas/                # Pydantic request/response models
+│       ├── models/                 # SQLAlchemy DB models
+│       └── services/
+│           ├── llm.py              # LLMService, cascade fallback, 24h reset
+│           ├── policy.py           # policy loader + context builder
+│           ├── claim_processor.py  # pipeline runner + response mapper
+│           ├── claim_repository.py # DB reads (get_claim, list_claims)
+│           └── dead_letter.py      # DLQ stub (NoOpDLQ)
 │
 ├── frontend/                       # Streamlit service
-│   ├── __init__.py
 │   ├── requirements.in
 │   ├── requirements.txt
 │   └── app.py                      # Streamlit UI
@@ -106,6 +118,7 @@ Plum - ClaimPilot/
 │   ├── plan.md                     # this file
 │   ├── design_decisions.md         # architectural decisions and trade-offs
 │   ├── assumptions.md              # system assumptions (document collection, DB, policy)
+│   ├── failure_handling.md         # per-node failure behaviour + combined scenarios
 │   ├── architecture.md             # (deliverable — pending)
 │   ├── contracts.md                # (deliverable — pending)
 │   └── eval_report.md              # (deliverable — pending)
@@ -248,7 +261,7 @@ We do not trust the client's declared document type label. Gemini reads the imag
 - Confidence is self-reported per field — Gemini fills a `confidence: float` field in the response schema
 - Gemini returns `null` for unreadable fields; confidence for that field = 0.0
 - Accepts images and PDFs natively — no conversion step
-- Graceful degradation: Gemini failure → adds `extraction_agent` to `failed_components`, continues with empty extraction
+- Graceful degradation: Gemini failure → `extraction_failed = True`, decision set to `MANUAL_REVIEW` at confidence 0.30, routes **directly to `save_to_db`** — validation and adjudication are skipped entirely
 
 **Quality flags set:**
 - `RUBBER_STAMP_OVER_TEXT` — field present but partially obscured
@@ -303,7 +316,7 @@ REJECTED and MANUAL_REVIEW from Gemini are always honored — the gate only over
 
 Writes one `Claim` row and one `ClaimDocument` row per uploaded document to PostgreSQL. Stores the full `trace` JSONB so the Streamlit UI can reconstruct the decision audit trail without requiring LangSmith access.
 
-**Graceful degradation:** DB failure → `save_to_db` added to `failed_components`, pipeline still returns the decision to the caller. Data loss is flagged; the system does not crash.
+**Graceful degradation:** DB write retried 3 times (1s, 2s delays). On total failure → HTTP 503 returned to caller; decision is **not** delivered without a DB record. Failed claim published to dead letter queue stub for manual recovery.
 
 ---
 
@@ -584,44 +597,39 @@ variance = cv2.Laplacian(gray, cv2.CV_64F).var()
 # variance < 80 → UNREADABLE (threshold tunable per doc type)
 ```
 This is objective, deterministic, costs nothing, and protects Gemini quota from garbage image inputs.
-PDFs skip this check — Gemini accepts them natively and reports unreadable pages within its extraction response (low confidence fields or explicit null values).
+PDFs skip this check — Gemini accepts them natively and reports unreadable pages within its extraction response.
 
-### Layer 2 — Gemini Extraction Confidence (self-reported)
-Gemini fills a `confidence: float` field in the response schema based on its own assessment — legibility, stamp obscurement, missing fields. Fields where Gemini returns `null` (not found) → `confidence = 0.0`. All per-field confidences stored in `claim_documents.extraction` JSONB and visible in the UI trace.
+### Layer 2 — Gemini Extraction Confidence (self-reported per document)
+The extraction schema includes a `confidence: float` field that Gemini fills based on its own assessment — legibility, stamp obscurement, partial pages, handwriting. Stored per document in `claim_documents.extraction` JSONB and visible in the UI trace.
 
-### Layer 3 — Decision Confidence Score (deterministic formula)
+### Layer 3 — Decision Confidence Score (self-reported by adjudication Gemini)
+The adjudication schema includes a `confidence_score: float` field. Gemini sets this based on its own certainty about the policy evaluation — ambiguous diagnoses, partial data, fraud signals.
 
-Measures: **"how complete and reliable is our analysis?"** — not likelihood of approval.
-A clear rejection (TC012) should score > 0.90 because the policy rule matched cleanly.
-
+Gemini is instructed to follow this formula:
 ```
-start: 1.0
-
-Document quality penalties (per document):
-  avg OCR confidence < 0.40  →  -0.20
-  avg OCR confidence < 0.70  →  -0.08
-
-Field extraction penalties (per required field):
-  field.confidence < 0.50    →  -0.03
-
-Component failure penalties (TC011 — graceful degradation):
-  each skipped/failed agent  →  -0.15
-
-Fraud signal penalties:
-  each triggered signal      →  -0.10
-
-final = clamp(score, 0.0, 1.0)
+Start at 0.9
+Deduct: 0.15 per failed_component, 0.10 if manual_review flagged, 0.03 per warning
+APPROVED/PARTIAL/REJECTED: clamp to [0.70, 1.0]
+MANUAL_REVIEW: clamp to [0.50, 0.80]
 ```
 
-**Sanity check against test cases:**
+**Python confidence gate (post-adjudication):**
 
-| Case | Scenario | Expected | Formula gives |
-|------|----------|----------|---------------|
-| TC004 | Clean docs, all agents run | > 0.85 | ~0.93 |
-| TC011 | One agent fails | Lower than TC004 | ~0.78 |
-| TC012 | Clear exclusion, clean docs | > 0.90 | ~0.93 |
+| Gemini confidence | Action |
+|---|---|
+| ≥ 0.75 | Honor Gemini's decision |
+| 0.50 – 0.74 | Override APPROVED/PARTIAL → MANUAL_REVIEW |
+| < 0.50 | Override APPROVED/PARTIAL → REJECTED |
 
-The penalty table lives in one config dataclass — not scattered across agents.
+REJECTED and MANUAL_REVIEW from Gemini are always honored — the gate only overrides optimistic decisions with insufficient confidence.
+
+**Fixed confidence values for failure paths:**
+
+| Scenario | Confidence | Set by |
+|---|---|---|
+| TC011 simulated failure | 0.60 | Python (hardcoded for TC011) |
+| Adjudication Gemini failure | 0.50 | Python (`_graceful_pass`) |
+| Extraction Gemini failure | 0.30 | Python (extraction node) |
 
 ---
 

@@ -42,32 +42,39 @@ Six-node LangGraph pipeline with two Gemini calls per claim:
 ├── backend/
 │   ├── requirements.txt
 │   ├── data/
-│   │   └── policy_terms.json       # loaded at startup, cached via @lru_cache
+│   │   └── policy_terms.json           # loaded at startup, cached via @lru_cache
 │   └── src/
-│       ├── main.py                 # FastAPI app, health check, CORS
+│       ├── main.py                     # FastAPI app, health check, CORS
 │       ├── agents/
-│       │   ├── document_validation.py   # blur_gate + validate_documents nodes
-│       │   ├── extraction.py            # extract_documents + reject_patient_mismatch nodes
-│       │   ├── adjudicate.py            # adjudicate_claim node
-│       │   ├── decision.py              # save_to_db node
-│       │   └── prompts.py               # all LLM prompts
+│       │   ├── blur_gate.py            # blur_gate node (OpenCV)
+│       │   ├── extraction.py           # extract_documents node (Gemini call 1)
+│       │   ├── patient_name_check.py   # reject_patient_mismatch node
+│       │   ├── validate_documents.py   # validate_documents node (pure Python)
+│       │   ├── adjudicate.py           # adjudicate_claim node (Gemini call 2)
+│       │   ├── save_to_db.py           # save_to_db node (retry + DLQ stub)
+│       │   └── prompts/
+│       │       ├── extraction.py       # extraction LLM prompt
+│       │       └── adjudication.py     # adjudication LLM prompt
 │       ├── pipeline/
-│       │   ├── graph.py            # LangGraph wiring + conditional edges
-│       │   └── state.py            # ClaimState TypedDict
-│       ├── schemas/                # Pydantic request/response models
-│       ├── models/                 # SQLAlchemy DB models
+│       │   ├── graph.py                # LangGraph wiring + conditional edges
+│       │   └── state.py                # ClaimState TypedDict
+│       ├── schemas/                    # Pydantic request/response models
+│       ├── models/                     # SQLAlchemy DB models
 │       └── services/
-│           ├── llm.py              # GeminiService, cascade fallback, 24h reset
-│           ├── policy.py           # policy loader + context builder
-│           └── claims.py           # pipeline runner + response mapper
+│           ├── llm.py                  # LLMService, cascade fallback, 24h reset
+│           ├── policy.py               # policy loader + context builder
+│           ├── claim_processor.py      # pipeline runner + response mapper
+│           ├── claim_repository.py     # DB reads (get_claim, list_claims)
+│           └── dead_letter.py          # DLQ stub (NoOpDLQ)
 ├── frontend/
-│   └── app.py                      # Streamlit UI
+│   └── app.py                          # Streamlit UI
 ├── backend/scripts/
-│   └── clear_db.py                 # utility: wipe claims table (--confirm to run)
+│   └── clear_db.py                     # utility: wipe claims table (--confirm to run)
 ├── docs/
 │   ├── plan.md
 │   ├── design_decisions.md
-│   └── assumptions.md
+│   ├── assumptions.md
+│   └── failure_handling.md
 ├── .env.example
 └── render.yaml
 ```
