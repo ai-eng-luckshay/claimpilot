@@ -13,6 +13,8 @@ def _route_after_blur(state: ClaimState) -> str:
 
 
 def _route_after_extraction(state: ClaimState) -> str:
+    if state.get("extraction_failed"):
+        return "save_to_db"  # decision already set to MANUAL_REVIEW in extraction node
     if not state.get("patient_name_consistent", True):
         return "reject_patient_mismatch"
     return "validate_documents"
@@ -42,7 +44,11 @@ def build_pipeline():
     workflow.add_conditional_edges(
         "extract_documents",
         _route_after_extraction,
-        {"reject_patient_mismatch": "reject_patient_mismatch", "validate_documents": "validate_documents"},
+        {
+            "save_to_db": "save_to_db",
+            "reject_patient_mismatch": "reject_patient_mismatch",
+            "validate_documents": "validate_documents",
+        },
     )
     workflow.add_edge("reject_patient_mismatch", "save_to_db")
     workflow.add_conditional_edges(

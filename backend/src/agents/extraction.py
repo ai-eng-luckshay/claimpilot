@@ -167,18 +167,41 @@ def extract_documents(state: ClaimState) -> dict:
         failed_components.append("extraction_agent")
         for doc in documents:
             fname = doc.get("file_name", "")
-            stub = ExtractedDocument(
-                classified_type="UNKNOWN",
-                file_name=fname,
-                quality_flags=["PARTIAL_DOCUMENT"],
-                overall_confidence=0.0,
-            )
-            extracted.append(stub.model_dump())
             trace_entries.append({"file": fname, "classified_type": "UNKNOWN", "error": str(e)})
+
+        # Route directly to save_to_db as MANUAL_REVIEW — no point calling adjudication
+        # Gemini already failed once; running it again on unreadable data adds no value.
+        return {
+            "extracted_documents": [],
+            "extraction_complete": False,
+            "extraction_failed": True,
+            "patient_name_consistent": True,
+            "patient_name_mismatch_details": None,
+            "decision": "MANUAL_REVIEW",
+            "approved_amount": None,
+            "confidence_score": 0.30,
+            "decision_reason": (
+                "Document extraction failed — Gemini could not process the submitted documents. "
+                "Claim routed to manual review."
+            ),
+            "rejection_reasons": [],
+            "failed_components": failed_components,
+            "trace": {
+                **state.get("trace", {}),
+                "extraction": {
+                    "agent": "extraction",
+                    "single_gemini_call": True,
+                    "document_count": len(documents),
+                    "error": str(e),
+                    "documents": trace_entries,
+                },
+            },
+        }
 
     return {
         "extracted_documents": extracted,
         "extraction_complete": True,
+        "extraction_failed": False,
         "patient_name_consistent": patient_name_consistent,
         "patient_name_mismatch_details": patient_name_mismatch_details,
         "failed_components": failed_components,

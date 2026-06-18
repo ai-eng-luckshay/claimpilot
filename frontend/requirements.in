@@ -5,3 +5,4 @@ streamlit
 httpx
 python-dotenv
 pandas
+fpdf2

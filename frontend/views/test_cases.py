@@ -7,14 +7,29 @@ from api import submit_claim
 from components.response import render_response
 from config import TEST_CASES_PATH, TEST_DOCS_DIR
 
-# TC004-TC012 docs have no explicit file_name — derive from actual_type
-_TYPE_TO_FILENAME = {
-    "PRESCRIPTION": "prescription.jpg",
-    "HOSPITAL_BILL": "hospital_bill.jpg",
-    "LAB_REPORT": "lab_report.jpg",
-    "PHARMACY_BILL": "pharmacy_bill.jpg",
-    "DENTAL_REPORT": "dental_report.jpg",
-    "DISCHARGE_SUMMARY": "discharge_summary.jpg",
+# Four format modes — three atomic types plus a realistic mixed mode:
+#   images       — all JPEGs (photographed physical documents)
+#   scanned_pdfs — all scanned PDFs (image inside PDF, no selectable text)
+#   text_pdfs    — all text PDFs (selectable text, digitally created)
+#   mixed        — prescriptions & lab reports as text PDFs (digital),
+#                  bills & pharmacy receipts as JPEGs (photographed)
+
+_TYPE_TO_FILENAME: dict[str, dict[str, str]] = {
+    "PRESCRIPTION":      {"images": "prescription.jpg",      "scanned_pdfs": "prescription.pdf",      "text_pdfs": "prescription_text.pdf",      "mixed": "prescription_text.pdf"},
+    "HOSPITAL_BILL":     {"images": "hospital_bill.jpg",     "scanned_pdfs": "hospital_bill.pdf",     "text_pdfs": "hospital_bill_text.pdf",     "mixed": "hospital_bill.jpg"},
+    "LAB_REPORT":        {"images": "lab_report.jpg",        "scanned_pdfs": "lab_report.pdf",        "text_pdfs": "lab_report_text.pdf",        "mixed": "lab_report_text.pdf"},
+    "PHARMACY_BILL":     {"images": "pharmacy_bill.jpg",     "scanned_pdfs": "pharmacy_bill.pdf",     "text_pdfs": "pharmacy_bill_text.pdf",     "mixed": "pharmacy_bill.jpg"},
+    "DENTAL_REPORT":     {"images": "dental_report.jpg",     "scanned_pdfs": "dental_report.pdf",     "text_pdfs": "dental_report_text.pdf",     "mixed": "dental_report.jpg"},
+    "DISCHARGE_SUMMARY": {"images": "discharge_summary.jpg", "scanned_pdfs": "discharge_summary.pdf", "text_pdfs": "discharge_summary_text.pdf", "mixed": "discharge_summary_text.pdf"},
+}
+
+_FORMAT_LABELS = ["images", "scanned_pdfs", "text_pdfs", "mixed"]
+
+_FORMAT_DISPLAY = {
+    "images":       "🖼 Images",
+    "scanned_pdfs": "📄 Scanned PDFs",
+    "text_pdfs":    "📝 Text PDFs",
+    "mixed":        "🔀 Mixed",
 }
 
 
@@ -53,26 +68,44 @@ def _render_test_result(tc: dict, response: dict) -> None:
         )
 
 
-def _build_smoke_payload(tc: dict) -> tuple[dict | None, list[str]]:
+def _resolve_filename(doc: dict, fmt: str) -> str:
+    """Return the filename to load for this document given the chosen format."""
+    actual_type = doc.get("actual_type", "")
+    mapping = _TYPE_TO_FILENAME.get(actual_type, {})
+    target = mapping.get(fmt, mapping.get("images", ""))
+
+    explicit = doc.get("file_name")
+    if not explicit:
+        return target
+
+    # TC001-TC003 have explicit file_names — apply the same suffix logic
+    stem = explicit.rsplit(".", 1)[0]
+    if target.endswith("_text.pdf"):
+        return stem + "_text.pdf"
+    if target.endswith(".pdf"):
+        return stem + ".pdf"
+    return explicit  # images — use original filename
+
+
+def _build_smoke_payload(tc: dict, fmt: str = "images") -> tuple[dict | None, list[str]]:
     inp = tc["input"]
     tc_id = tc["case_id"]
     warnings: list[str] = []
 
     docs = []
     for doc in inp.get("documents", []):
-        # TC001-TC003 have explicit file_name; TC004-TC012 derive from actual_type
-        fname = doc.get("file_name") or _TYPE_TO_FILENAME.get(doc.get("actual_type", ""), "")
+        fname = _resolve_filename(doc, fmt)
         if not fname:
             warnings.append(f"Cannot determine filename for a doc in {tc_id} — skipping.")
             continue
 
-        img_path = TEST_DOCS_DIR / tc_id / fname
-        if not img_path.exists():
-            warnings.append(f"Missing mock image: test_docs/{tc_id}/{fname}")
+        file_path = TEST_DOCS_DIR / tc_id / fname
+        if not file_path.exists():
+            warnings.append(f"Missing file: test_docs/{tc_id}/{fname} — run generate_test_docs.py")
             continue
 
-        file_bytes = img_path.read_bytes()
-        suffix = img_path.suffix.lower()
+        file_bytes = file_path.read_bytes()
+        suffix = file_path.suffix.lower()
         mime = "application/pdf" if suffix == ".pdf" else "image/jpeg"
 
         docs.append({
@@ -102,9 +135,9 @@ def _build_smoke_payload(tc: dict) -> tuple[dict | None, list[str]]:
 def render_test_cases_tab() -> None:
     st.subheader("Test Cases")
     st.caption(
-        "Smoke-tests the full pipeline with real mock images. "
-        "Each test case loads its images from `frontend/data/test_docs/` and sends them "
-        "through Gemini OCR - no pre-extracted content."
+        "Smoke-tests the full pipeline with real mock documents. "
+        "Each test case loads files from `frontend/data/test_docs/` and sends them "
+        "through Gemini — no pre-extracted content."
     )
 
     test_cases = _load_test_cases()
@@ -112,8 +145,20 @@ def render_test_cases_tab() -> None:
         st.error("test_cases.json not found at `frontend/data/test_cases.json`.")
         return
 
+    col_sel, col_fmt = st.columns([3, 1])
     options = {f"{tc['case_id']} - {tc['case_name']}": tc for tc in test_cases}
-    selected_label = st.selectbox("Select test case", list(options.keys()))
+    selected_label = col_sel.selectbox("Select test case", list(options.keys()))
+    fmt = col_fmt.radio(
+        "Document format",
+        _FORMAT_LABELS,
+        format_func=lambda x: _FORMAT_DISPLAY[x],
+        help=(
+            "**🖼 Images** — JPEG photos of documents (blur gate active)\n\n"
+            "**📄 Scanned PDFs** — image wrapped inside PDF (no selectable text)\n\n"
+            "**📝 Text PDFs** — digitally created PDF with selectable text\n\n"
+            "**🔀 Mixed** — prescriptions & lab reports as text PDFs, bills as JPEGs"
+        ),
+    )
     tc = options[selected_label]
 
     left, right = st.columns([2, 1])
@@ -131,37 +176,38 @@ def render_test_cases_tab() -> None:
 
     documents = tc["input"].get("documents", [])
     tc_id = tc["case_id"]
-    st.write("**Mock images to be sent through OCR pipeline:**")
-    img_cols = st.columns(max(len(documents), 1))
-    all_images_present = True
+    st.write("**Documents to be sent through OCR pipeline:**")
+    doc_cols = st.columns(max(len(documents), 1))
+    all_present = True
     for i, doc in enumerate(documents):
-        fname = doc.get("file_name") or _TYPE_TO_FILENAME.get(doc.get("actual_type", ""), "")
-        img_path = TEST_DOCS_DIR / tc_id / fname
-        col = img_cols[i % len(img_cols)]
+        fname = _resolve_filename(doc, fmt)
+        file_path = TEST_DOCS_DIR / tc_id / fname
+        col = doc_cols[i % len(doc_cols)]
         col.caption(f"`{doc.get('actual_type', '?')}` — {fname}")
-        if fname and img_path.exists() and img_path.suffix.lower() in (".jpg", ".jpeg", ".png"):
-            col.image(str(img_path), width='stretch')
-        elif fname and img_path.exists():
-            col.code(fname)
+        if fname and file_path.exists():
+            if file_path.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                col.image(str(file_path), width="stretch")
+            else:
+                col.info(f"📄 PDF ready: `{fname}`")
         else:
             col.error(f"Missing: {fname or '(unknown filename)'}")
-            all_images_present = False
+            all_present = False
 
-    if not all_images_present:
+    if not all_present:
         st.warning(
-            "Some mock images are missing. "
+            "Some files are missing. "
             "Run `python frontend/data/generate_test_docs.py` to generate them."
         )
 
-    if st.button("▶ Run Smoke Test", type="primary", key="run_test", disabled=not all_images_present):
-        payload, warnings = _build_smoke_payload(tc)
+    if st.button("▶ Run Smoke Test", type="primary", key="run_test", disabled=not all_present):
+        payload, warnings = _build_smoke_payload(tc, fmt)
         for w in warnings:
             st.warning(w)
         if payload is None:
-            st.error("No documents could be loaded - cannot run test.")
+            st.error("No documents could be loaded — cannot run test.")
             return
 
-        with st.spinner(f"Running {tc['case_id']} through Gemini OCR pipeline..."):
+        with st.spinner(f"Running {tc['case_id']} through Gemini pipeline ({fmt} mode)..."):
             status, response = submit_claim(payload)
 
         st.divider()

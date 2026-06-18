@@ -40,6 +40,21 @@ def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentV
         error_logger.error("process_claim: pipeline raised exception claim_id=%s — %s", claim_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Pipeline error: {e}")
 
+    # If the DB write failed after all retries, block the response entirely.
+    # Returning a decision to the caller with no DB record creates an irreconcilable
+    # inconsistency — the customer believes the claim is decided, the company has nothing.
+    if "save_to_db" in final_state.get("failed_components", []):
+        error_logger.error(
+            "process_claim: blocking response — save_to_db failed claim_id=%s", claim_id
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Your claim was processed but could not be saved due to a database error. "
+                "No decision has been recorded. Please resubmit your claim."
+            ),
+        )
+
     response = _map_state_to_response(claim_id, saved_files, final_state)
     application_logger.info(
         "process_claim: END claim_id=%s response_type=%s",

@@ -228,10 +228,10 @@ def _graceful_pass(
     trace: dict, failed_components: list[str], claimed_amount: float, reason: str
 ) -> dict:
     return {
-        "decision": "APPROVED",
-        "approved_amount": claimed_amount,
+        "decision": "MANUAL_REVIEW",
+        "approved_amount": None,
         "confidence_score": 0.50,
-        "decision_reason": f"Adjudication unavailable ({reason}) — manual review recommended.",
+        "decision_reason": f"Adjudication unavailable ({reason}) — routed to manual review.",
         "rejection_reasons": [],
         "failed_components": failed_components,
         "trace": {**trace, "adjudicate": {"skipped": True, "reason": reason}},

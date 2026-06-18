@@ -18,6 +18,7 @@ class ClaimState(TypedDict, total=False):
     # Gemini call 1: OCR + Classification (single call for all docs)
     extracted_documents: list[dict]
     extraction_complete: bool
+    extraction_failed: bool  # True when LLM call failed — routes directly to save_to_db as MANUAL_REVIEW
 
     # Document type validation (runs after extraction)
     validation_passed: bool

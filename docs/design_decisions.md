@@ -27,20 +27,16 @@ The claims processing rules — co-pay calculations, waiting period date arithme
 **Conditional routing is first-class.**
 LangGraph's conditional edges are typed routing functions: a Python function inspects the state and returns the name of the next node. Early exits for patient name mismatch, document validation failure, and blur gate — as well as the TC011 graceful degradation path — are all clean conditional edges. n8n's IF nodes work for simple true/false branches but are not designed for the kind of stateful, multi-signal routing that claims processing requires.
 
-### Where n8n is the right tool
-
-n8n is used as the **channel layer only** — receiving WhatsApp messages via Twilio, collecting document attachments, calling `POST /api/claims`, and sending the decision back to the member. This is exactly what n8n excels at: webhook ingestion, HTTP calls, and message routing. It has no claims logic and does not need to.
-
 ### Summary
 
-| Concern | LangGraph | n8n |
-|---------|-----------|-----|
+| Concern | LangGraph | Low-code automation tools |
+|---------|-----------|--------------------------|
 | Unit testable | Yes — plain Python functions | No — visual nodes, no test runner |
 | Typed state contracts | Yes — TypedDict + Pydantic | No — untyped JSON |
 | LangSmith observability | Native | Not available |
 | Business logic in Python | Yes | JavaScript code nodes or HTTP calls |
 | Conditional routing | Typed routing functions | IF nodes (limited) |
-| Right role in this system | Core pipeline | Channel layer (WhatsApp/email) |
+| Right role in this system | Core pipeline | Channel / notification layer |
 
 ---
 
@@ -137,8 +133,8 @@ EasyOCR is primarily trained on printed text. It performs poorly on handwritten 
 **No system binaries for PDFs.**
 EasyOCR works on images only. To process a PDF, the standard approach is pdf2image + poppler (a system binary) to convert each page to an image first. Render's free tier does not support arbitrary system packages. Gemini accepts PDFs natively via `mime_type='application/pdf'` — no conversion, no system dependencies, no poppler.
 
-**Token-level field confidence via logprobs.**
-EasyOCR produces character-level confidence scores for the OCR step, but these do not translate to confidence on the structured fields that the policy check agent needs. Gemini with `response_logprobs=True` returns token-level log probabilities for every token in the structured JSON output, which we convert to per-field confidence scores. This is more meaningful: a field confidence of 0.3 on `total_amount` directly signals that the policy check agent should treat that value cautiously, and the decision confidence formula penalises accordingly.
+**Self-reported field confidence.**
+EasyOCR produces character-level confidence scores for the OCR step, but these do not translate to confidence on the structured fields that the policy check agent needs. With Gemini, the extraction schema includes a `confidence: float` field that Gemini fills based on its own assessment of each extraction — handwriting legibility, stamp obscurement, partial pages. A confidence of 0.3 on `total_amount` directly signals that the policy check agent should treat that value cautiously, and the decision confidence formula penalises accordingly.
 
 **Structured output in one pass.**
 With EasyOCR + AI, the LLM receives raw text and must infer structure. With Gemini, `response_schema` is set to the appropriate Pydantic model (PrescriptionContent, HospitalBillContent, etc.) and Gemini returns a validated JSON object directly. The extraction agent does not need a separate parsing step.
@@ -161,7 +157,7 @@ EasyOCR runs entirely locally — no API call, no network latency, no rate limit
 | Visual layout preserved | No — flat text | Yes |
 | Handwriting handling | Poor | Good |
 | PDF support | Needs poppler (system binary) | Native |
-| Field-level confidence | No clean mechanism | logprobs → per-field score |
+| Field-level confidence | No clean mechanism | Self-reported per structured field |
 | Structured output | LLM must infer from raw text | response_schema enforces it |
 | Quality flag detection | Separate step | Same pass |
 | GPU required | Yes for accuracy | No |
@@ -219,3 +215,45 @@ A mismatch detected at extraction routes to `reject_patient_mismatch` → `save_
 ### Why validate_documents stayed as Python
 
 Document type requirements (CONSULTATION needs PRESCRIPTION + HOSPITAL_BILL) are a deterministic list-membership check from `policy_terms.json`. There is no ambiguity to reason about — either the classified type is in the required list or it is not. Python is cheaper, instantaneous, and 100% reliable for this check. Moving it into Gemini would add no value and consume quota.
+
+---
+
+## 7. Fraud Context Supplied by Frontend vs Queried from DB — Why Frontend-Supplied for Now
+
+### What was considered
+
+The adjudication prompt receives two fraud-relevant fields: `claims_history` (a list of prior claims for the member) and `ytd_claims_amount` (the member's year-to-date approved total). These could be:
+
+1. **Frontend-supplied** — the Streamlit UI reads its own session state or calls the claims history API before submission and embeds the values in the `POST /api/claims` payload.
+2. **DB-queried inside the pipeline** — `process_claim` opens a DB session, queries `claims` and `claim_documents` for the member, and builds these values itself before constructing `ClaimState`.
+
+### Why frontend-supplied was chosen
+
+**Scope and time constraint.**
+For a demo with a small fixed dataset, the frontend already has a working claims history call (`GET /api/claims?member_id=...`). Reusing that data in the submission payload is the path of least resistance. Wiring a DB session into the pipeline requires passing `db` through `process_claim`, down into `ClaimState`, and handling session lifecycle inside the graph — meaningful additional plumbing for a demo.
+
+**The pipeline is intentionally stateless.**
+`process_claim` currently has no dependency on the DB layer during pipeline execution — only `save_to_db` (the final node) touches the database. Keeping the pipeline stateless makes it easier to unit test: nodes receive a `ClaimState` dict and return a dict update; no mocking of DB sessions is required. Introducing a DB query mid-pipeline would couple every test that exercises `adjudicate_claim` to a live or mocked DB session.
+
+**The trust boundary is acceptable for a demo.**
+In production, frontend-supplied fraud context is unsafe — a caller could pass an empty `claims_history` to make a repeat claim look like a first claim. For a controlled demo with internal users, this risk is not material.
+
+### Why DB querying is the right extension
+
+For a production system, the fraud context must come from the DB — the pipeline is the source of truth and cannot trust the caller to supply accurate history. The extension is straightforward:
+
+1. `process_claim` accepts a `db: Session` parameter (already available in the FastAPI controller via `Depends(get_db)`).
+2. Before building `initial_state`, call `_fetch_member_claims_context(member_id, db)` (stub already written in `services/claims.py`) to get `claims_history` and `ytd_claims_amount` from the DB.
+3. Merge those values into the `request` dict passed to `ClaimState`, overriding whatever the frontend sent.
+
+The stub in `services/claims.py` shows the exact query: prior claims ordered by date, YTD sum of approved amounts for the current calendar year, capped at 20 records to bound the prompt length.
+
+### Summary
+
+| Concern | Frontend-supplied | DB-queried |
+|---------|------------------|------------|
+| Implementation cost | Zero — reuses existing API call | Medium — DB session plumbing through pipeline |
+| Pipeline testability | High — no DB mock needed | Lower — tests need session fixture |
+| Fraud context accuracy | Depends on caller honesty | Authoritative |
+| Production-safe | No | Yes |
+| Right for this demo | Yes | Right for production extension |

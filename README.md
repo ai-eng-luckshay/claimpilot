@@ -4,20 +4,31 @@ Automated health insurance claims processing system built for Plum. Accepts a cl
 
 ## Architecture
 
-Five-agent LangGraph pipeline:
+Six-node LangGraph pipeline with two Gemini calls per claim:
 
-| Agent | Responsibility |
+| Node | Type | Responsibility |
+|---|---|---|
+| `blur_gate` | OpenCV (local) | Reject blurry or missing images before spending API quota |
+| `extract_documents` | **GEMINI CALL 1** | Classify each doc type, extract all fields, cross-check patient names across docs |
+| `reject_patient_mismatch` | Python | Fast REJECTED path when names differ across documents |
+| `validate_documents` | Python (no LLM) | Verify correct document types are present for the claim category |
+| `adjudicate_claim` | **GEMINI CALL 2** | Policy eligibility + fraud detection + financial calculation + final decision in one call |
+| `save_to_db` | Python | Persist claim + trace to PostgreSQL |
+
+### Confidence gate (Python, post-adjudication)
+
+| Confidence | Action |
 |---|---|
-| Document Validation | Doc type checks, readability gate (OpenCV blur variance), patient name match |
-| OCR / Extraction | Gemini 2.5 Flash Vision — structured field extraction with per-field confidence via logprobs |
-| Policy Check | Waiting periods, exclusions, per-claim limits, co-pay, network discounts |
-| Fraud Detection | Same-day claims, document alterations, high-value threshold, monthly claim count |
-| Decision | Aggregates all checks, computes confidence score, produces final decision |
+| ≥ 0.75 | Honor Gemini's decision |
+| 0.50 – 0.74 | Override to MANUAL_REVIEW |
+| < 0.50 | Override to REJECTED |
 
 ## Tech Stack
 
 - **Orchestration:** LangGraph
-- **OCR / AI:** Gemini 2.5 Flash (vision, free tier) · Gemini 2.5 Flash-Lite (text reasoning)
+- **LLM:** LangChain `ChatGoogleGenerativeAI` + Gemini (Google AI Studio free tier)
+  - Both extraction and adjudication use the same cascade: `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite` → `gemini-2.0-flash-lite` → `gemini-3.5-flash` → `gemini-3.0-flash` → `gemini-2.5-flash` → `gemini-2.0-flash`
+  - Rate-limited models skipped globally for 24 hours, then reset
 - **API:** FastAPI
 - **Frontend:** Streamlit
 - **Database:** PostgreSQL (SQLAlchemy + Alembic)
@@ -28,24 +39,37 @@ Five-agent LangGraph pipeline:
 
 ```
 .
-├── backend/                  # FastAPI app + LangGraph pipeline
-│   ├── requirements.in       # unpinned deps (edit this)
-│   ├── requirements.txt      # pinned deps (pip-compile output)
-│   └── src/
-│       ├── main.py           # FastAPI app, health check, CORS
-│       ├── config.py         # pydantic-settings
-│       ├── agents/           # LangGraph agents (one file per agent)
-│       ├── models/           # SQLAlchemy DB models
-│       ├── schemas/          # Pydantic request/response models
-│       ├── pipeline/         # LangGraph graph + ClaimState
-│       └── services/         # policy loader, Gemini client
-├── frontend/                 # Streamlit UI
-│   ├── requirements.in
+├── backend/
 │   ├── requirements.txt
-│   └── app.py
-├── docs/                     # Architecture, plan, technical notes
-├── .env.example              # keys only — copy to .env.dev and fill in
-└── render.yaml               # Render deployment config
+│   ├── data/
+│   │   └── policy_terms.json       # loaded at startup, cached via @lru_cache
+│   └── src/
+│       ├── main.py                 # FastAPI app, health check, CORS
+│       ├── agents/
+│       │   ├── document_validation.py   # blur_gate + validate_documents nodes
+│       │   ├── extraction.py            # extract_documents + reject_patient_mismatch nodes
+│       │   ├── adjudicate.py            # adjudicate_claim node
+│       │   ├── decision.py              # save_to_db node
+│       │   └── prompts.py               # all LLM prompts
+│       ├── pipeline/
+│       │   ├── graph.py            # LangGraph wiring + conditional edges
+│       │   └── state.py            # ClaimState TypedDict
+│       ├── schemas/                # Pydantic request/response models
+│       ├── models/                 # SQLAlchemy DB models
+│       └── services/
+│           ├── llm.py              # GeminiService, cascade fallback, 24h reset
+│           ├── policy.py           # policy loader + context builder
+│           └── claims.py           # pipeline runner + response mapper
+├── frontend/
+│   └── app.py                      # Streamlit UI
+├── backend/scripts/
+│   └── clear_db.py                 # utility: wipe claims table (--confirm to run)
+├── docs/
+│   ├── plan.md
+│   ├── design_decisions.md
+│   └── assumptions.md
+├── .env.example
+└── render.yaml
 ```
 
 ## Getting Started
@@ -60,38 +84,33 @@ Five-agent LangGraph pipeline:
 ### Setup
 
 ```bash
-# Clone and enter the repo
 git clone <repo-url>
 cd "Plum - ClaimPilot"
 
-# Create shared virtual environment
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 # source .venv/bin/activate   # macOS/Linux
 
-# Install dependencies
 pip install -r backend/requirements.txt
 pip install -r frontend/requirements.txt
 
-# Configure environment
 cp .env.example .env.dev
 # Edit .env.dev — fill in GOOGLE_API_KEY, LANGSMITH_API_KEY, DATABASE_URL
 
-# Run database migrations
 alembic upgrade head
 ```
 
 ### Run
 
 ```bash
-# Terminal 1 — Backend API (http://localhost:8000)
+# Terminal 1 — Backend (http://localhost:8000)
 uvicorn backend.src.main:app --reload
 
-# Terminal 2 — Frontend UI (http://localhost:8501)
+# Terminal 2 — Frontend (http://localhost:8501)
 streamlit run frontend/app.py
 ```
 
-**VS Code:** Run & Debug (`Ctrl+Shift+D`) → select **Full Stack: API + UI** to start both.
+**VS Code:** Run & Debug (`Ctrl+Shift+D`) → **Full Stack: API + UI**
 
 ## API Endpoints
 
@@ -104,26 +123,21 @@ streamlit run frontend/app.py
 
 ## Environment Variables
 
-| Variable | Service | Description |
-|----------|---------|-------------|
-| `GOOGLE_API_KEY` | API | Google AI Studio key |
-| `LANGSMITH_API_KEY` | API | LangSmith tracing key |
-| `LANGCHAIN_TRACING_V2` | API | Set to `true` |
-| `LANGCHAIN_PROJECT` | API | LangSmith project (default: `claimpilot`) |
-| `DATABASE_URL` | API | PostgreSQL connection string |
-| `ENVIRONMENT` | API | `dev` or `prod` |
-| `API_BASE_URL` | UI | FastAPI base URL for Streamlit |
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_API_KEY` | Google AI Studio key |
+| `LANGSMITH_API_KEY` | LangSmith tracing key |
+| `LANGCHAIN_TRACING_V2` | Set to `true` |
+| `LANGCHAIN_PROJECT` | LangSmith project name |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `ENVIRONMENT` | `dev` or `prod` |
+| `API_BASE_URL` | FastAPI base URL (for Streamlit) |
 
 ## Deployment
 
 Every push to `main` auto-deploys both services on Render.
 
-**First deploy:** Connect repo → New Blueprint → Render reads `render.yaml` → creates both services + PostgreSQL automatically. Then set `GOOGLE_API_KEY`, `LANGSMITH_API_KEY`, and `API_BASE_URL` in the Render dashboard.
-
-| Service | URL |
-|---------|-----|
-| API | `https://claimpilot-api.onrender.com` |
-| UI | `https://claimpilot-ui.onrender.com` |
+**First deploy:** Connect repo → New Blueprint → Render reads `render.yaml` → provisions both services + PostgreSQL. Then set `GOOGLE_API_KEY`, `LANGSMITH_API_KEY`, and `API_BASE_URL` in the Render dashboard.
 
 ## Running Tests
 
@@ -131,10 +145,18 @@ Every push to `main` auto-deploys both services on Render.
 pytest backend/tests/ -v
 ```
 
+## Utility Scripts
+
+```bash
+# Preview what clear_db.py would delete (dry run)
+python -m backend.scripts.clear_db
+
+# Actually delete all claims + documents
+python -m backend.scripts.clear_db --confirm
+```
+
 ## Docs
 
-- [Project Plan](docs/plan.md) — decisions, agent responsibilities, timeline
-- [Technical Notes](docs/technical_notes.md) — Gemini logprobs pattern, code snippets
-- [Architecture](docs/architecture.md) *(Day 5)*
-- [Component Contracts](docs/contracts.md) *(Day 5)*
-- [Eval Report](docs/eval_report.md) — all 12 test cases with results *(Day 5)*
+- [Project Plan](docs/plan.md)
+- [Design Decisions](docs/design_decisions.md)
+- [Assumptions](docs/assumptions.md)

@@ -31,7 +31,6 @@ This is a real problem Plum operates today, done manually. The assignment is to 
 
 - A conversational document collection agent (the system receives all docs at once)
 - Multi-turn intake sessions or chat history
-- The WhatsApp/email conversation layer (that is n8n's job, can be added as a separate extension)
 - Pre-authorization request flows (we detect missing pre-auth and reject, we don't initiate it)
 - A dedicated OCR library (we use Gemini 2.5 Flash vision for extraction; OpenCV only for a local blur gate)
 
@@ -44,8 +43,9 @@ This is a real problem Plum operates today, done manually. The assignment is to 
 |-------|--------|-----|
 | Language | Python 3.11+ | Standard for AI/ML work; assignment expects it |
 | Agent Orchestration | **LangGraph** | True multi-agent graph with state; bonus points for multi-agentic architecture; built-in tracing |
-| OCR + Extraction | **Gemini 2.5 Flash** (Google AI Studio) | Free tier (250 req/day, 10 RPM, 250K TPM); vision-native; accepts images and PDFs directly; one call = OCR + structured extraction + per-field confidence |
-| Text / Reasoning | **Gemini 2.5 Flash-Lite** (Google AI Studio) | Free tier; used for decision explanation text and any soft reasoning; lighter and faster than Flash |
+| LLM Integration | **LangChain `ChatGoogleGenerativeAI`** + Gemini (Google AI Studio) | Free tier (250 req/day); vision-native; structured output via `with_structured_output(schema, method="json_schema")`; accepts images and PDFs directly |
+| Extraction model | `gemini-3.1-flash-lite` (primary) | Lightest and fastest; falls back through `gemini-2.5-flash-lite` → `gemini-2.0-flash-lite` → `gemini-3.5-flash` → `gemini-3.0-flash` → `gemini-2.5-flash` → `gemini-2.0-flash` on 429 |
+| Adjudication model | `gemini-3.1-flash-lite` (primary) | Same cascade as extraction; both use the same model list so a rate-limited model is skipped globally across both calls |
 | Readability gate | **OpenCV** (`cv2.Laplacian` blur variance) | Local, free, no API call — detects unreadable images before sending to Gemini (TC002 gate) |
 | Observability | **LangSmith** | Free tier; plug-and-play with LangGraph; gives per-step trace automatically |
 | API | **FastAPI** | Async, typed, auto-generates OpenAPI docs |
@@ -62,12 +62,10 @@ This is a real problem Plum operates today, done manually. The assignment is to 
 |-------|--------|-----|
 | Hosting | **Render.com** | Free tier: 2 web services + PostgreSQL; CI/CD via git push to main |
 | Config | **render.yaml** | Defines both services + DB in one file; Render reads it on repo connect for one-click infra creation |
-| Keep-alive | **UptimeRobot** | Free external pings every 5 min to prevent cold starts; also doubles as uptime alerting |
+| Keep-alive | **cron-job.org** | Free external pings every 5 min to prevent cold starts; also doubles as uptime alerting |
 | Docker | **Not needed** | Render's native Python buildpack handles the full stack; no system binaries required |
-| n8n (extension) | **n8n Cloud or self-hosted** | WhatsApp + email channel layer; calls FastAPI only, built after core |
 
 ### What We Rejected and Why
-- **n8n as core processor** — cannot write unit tests against n8n nodes; no Pydantic contracts; poor observability
 - **LangChain (standalone)** — LangGraph is the multi-agent evolution; better state management
 - **Next.js / React** — More polished but adds a full JS frontend to a 5-day Python assignment; Streamlit is sufficient for the demo and keeps the stack homogeneous
 - **Redis** — No clear need; policy JSON loads at startup; no async queuing required
@@ -106,10 +104,11 @@ Plum - ClaimPilot/
 │
 ├── docs/
 │   ├── plan.md                     # this file
-│   ├── technical_notes.md          # Gemini logprobs pattern, code snippets
-│   ├── architecture.md             # (Day 5)
-│   ├── contracts.md                # (Day 5)
-│   └── eval_report.md              # (Day 5)
+│   ├── design_decisions.md         # architectural decisions and trade-offs
+│   ├── assumptions.md              # system assumptions (document collection, DB, policy)
+│   ├── architecture.md             # (deliverable — pending)
+│   ├── contracts.md                # (deliverable — pending)
+│   └── eval_report.md              # (deliverable — pending)
 │
 ├── render.yaml                     # Render infra + CI/CD config
 ├── .env.example                    # committed — keys only, no values
@@ -125,14 +124,12 @@ Plum - ClaimPilot/
                         ┌─────────────────────────────┐
                         │        Entry Points          │
                         │                              │
-                        │  ┌─────────┐  ┌──────────┐  │
-                        │  │ Web UI  │  │  n8n     │  │
-                        │  │Streamlit│  │(WA/Email)│  │
-                        │  └────┬────┘  └────┬─────┘  │
-                        └───────┼────────────┼─────────┘
-                                │            │
-                                └─────┬──────┘
-                                      │ POST /api/claims
+                        │       ┌─────────┐            │
+                        │       │ Web UI  │            │
+                        │       │Streamlit│            │
+                        │       └────┬────┘            │
+                        └────────────┼─────────────────┘
+                                     │ POST /api/claims
                                       ▼
                         ┌─────────────────────────────┐
                         │         FastAPI              │
@@ -153,7 +150,7 @@ Plum - ClaimPilot/
                         │                 ▼ (all readable)         │
                         │  ┌─────────────────────────────────┐    │
                         │  │  GEMINI CALL 1: Extract Agent   │    │
-                        │  │  gemini-2.0-flash-lite (primary) │    │
+                        │  │  gemini-3.1-flash-lite (primary) │    │
                         │  │  → classifies each doc type      │    │
                         │  │  → extracts all fields           │    │
                         │  │  → self-reported confidence      │    │
@@ -176,7 +173,7 @@ Plum - ClaimPilot/
                         │                 ▼                        │
                         │  ┌─────────────────────────────────┐    │
                         │  │  GEMINI CALL 2: Adjudicate      │    │
-                        │  │  gemini-2.5-flash (primary)      │    │
+                        │  │  gemini-3.1-flash-lite (primary) │    │
                         │  │  → policy eligibility (7 checks) │    │
                         │  │  → fraud detection               │    │
                         │  │  → network discount + co-pay     │    │
@@ -209,42 +206,46 @@ Plum - ClaimPilot/
 
 ```
 START → blur_gate
-  ├── any UNREADABLE → END (DOCUMENT_UNREADABLE error)
-  └── all OK → extract_documents
-        ↓
-      validate_documents  (uses Gemini-classified types)
-  ├── FAIL → END (DOCUMENT_VALIDATION_FAILED error)
-  └── PASS → check_patient_names
-        ├── FAIL → END (PATIENT_NAME_MISMATCH error)
-        └── PASS → policy_check → fraud_check → make_decision → save_to_db → END
+  ├── image blurry or no data → END (DOCUMENT_UNREADABLE error, not saved to DB)
+  └── all OK → extract_documents  [GEMINI CALL 1]
+        ├── patient_name_consistent=False → reject_patient_mismatch → save_to_db → END
+        └── names OK → validate_documents  (Python, no LLM)
+              ├── FAIL → END (DOCUMENT_VALIDATION_FAILED error, not saved to DB)
+              └── PASS → adjudicate_claim  [GEMINI CALL 2]
+                    → confidence gate (Python)
+                    → save_to_db → END
 ```
 
-Early exits (blur, wrong doc type, patient mismatch) do NOT write to DB — no claim row created.
+Early exits for blur and wrong doc type do NOT write to DB. Patient mismatch and adjudication decisions DO write to DB (REJECTED row created).
 
 ---
 
-## 6. The Five Agents — Responsibilities
+## 7. The Six Nodes — Responsibilities
 
-### Blur Gate (pre-node, OpenCV only)
-**Runs first. Zero API calls. Pure local image check.**
+---
 
-- For every image file (JPEG/PNG): compute `cv2.Laplacian(gray, cv2.CV_64F).var()`
+### Node 1 — `blur_gate`
+**OpenCV only. Runs first. Zero API calls.**
+
+- For every image (JPEG/PNG): compute `cv2.Laplacian(gray, cv2.CV_64F).var()`
 - If variance < 80 → `DOCUMENT_UNREADABLE` → stop immediately, tell member which file to re-upload
-- PDFs skip this check — Gemini accepts PDFs natively and handles readability internally
+- If no `file_data` present for an image → `DOCUMENT_UNREADABLE` → stop
+- PDFs always pass — Gemini accepts PDFs natively and handles readability internally
 - Purpose: avoid wasting Gemini quota on images Gemini can't read anyway (TC002)
 
 ---
 
-### Agent 1: Extract + Classify Agent
-**Gemini 2.5 Flash Vision. Runs first among AI agents.**
+### Node 2 — `extract_documents`
+**Gemini Call 1. Single call for ALL documents.**
 
-Single Gemini call per document that does two things at once:
-1. **Classify** — what type of document is this? (`PRESCRIPTION / HOSPITAL_BILL / LAB_REPORT / PHARMACY_BILL / DENTAL_REPORT / DISCHARGE_SUMMARY / DIAGNOSTIC_REPORT`)
+One Gemini call processes all submitted documents simultaneously:
+1. **Classify** — what type is each document? (`PRESCRIPTION / HOSPITAL_BILL / LAB_REPORT / PHARMACY_BILL / DENTAL_REPORT / DISCHARGE_SUMMARY / UNKNOWN`)
 2. **Extract** — all relevant fields: `patient_name`, `doctor_name`, `date`, `diagnosis`, `total`, `line_items`, etc.
+3. **Patient name cross-check** — compares `patient_name` across all documents; `patient_name_consistent=False` only when names clearly belong to different individuals (handles initials, titles, minor spelling variants)
 
-We do not trust the client's declared document type label. Gemini reads the image and determines what it actually is. This is the correct implementation of "catch wrong documents" — you can only detect a wrong document by reading it.
+We do not trust the client's declared document type label. Gemini reads the image and determines what it actually is.
 
-- Called with `response_logprobs=True` — field confidence from token log probabilities, not self-reported
+- Confidence is self-reported per field — Gemini fills a `confidence: float` field in the response schema
 - Gemini returns `null` for unreadable fields; confidence for that field = 0.0
 - Accepts images and PDFs natively — no conversion step
 - Graceful degradation: Gemini failure → adds `extraction_agent` to `failed_components`, continues with empty extraction
@@ -259,77 +260,54 @@ Output per document: `ExtractedDocument` with `classified_type`, typed fields, f
 
 ---
 
-### Agent 2: Document Validation Agent
-**Pure logic. Runs after extraction. Uses Gemini-classified types — not client labels.**
+### Node 3 — `validate_documents`
+**Pure Python. No LLM. Uses Gemini-classified types — not client labels.**
 
-Checks (in order):
-1. Are the required document types present for this claim category? Compare Gemini-classified `classified_type` for each doc against `policy_terms.json → document_requirements[category].required`
-2. If wrong/missing types → stop with specific error naming what was found vs what is required (TC001)
+1. Read required document types for this claim category from `policy_terms.json → document_requirements[category].required`
+2. Compare against Gemini-classified `classified_type` for each submitted document
+3. If wrong or missing types → stop with a specific error naming what was uploaded vs what is required (TC001)
 
 Output: `PASS` or `FAIL` with actionable error message.
 
 ---
 
-### Patient Name Check (inline node, not a full agent)
-Compares `patient_name` across all extracted documents. If any mismatch → stop with error naming which doc had which name (TC003).
+### Node 3a — `reject_patient_mismatch`
+**Pure Python. Conditional branch off Node 2.**
+
+Fast early exit when `extract_documents` sets `patient_name_consistent=False`. Returns `REJECTED` with `PATIENT_NAME_MISMATCH` reason, persists to DB, and ends the pipeline. No Gemini call consumed.
 
 ---
 
----
+### Node 4 — `adjudicate_claim`
+**Gemini Call 2. Single call handles all adjudication.**
 
-### Agent 3: Policy Check Agent
-**Pure logic — no LLM. Reads `policy_terms.json`.**
+One Gemini call performs all of the following:
+1. **Policy eligibility** — member lookup, waiting periods (initial 30d, condition-specific 90–365d), exclusions, pre-auth requirements, per-claim limit, annual limit, sub-limit
+2. **Fraud detection** — same-day duplicate claims, document alteration flags, high-value threshold (>₹25,000), monthly claim count
+3. **Financial calculation** — network discount applied before co-pay; dental claims itemized (covered vs excluded procedures)
+4. **Final decision** — APPROVED / PARTIAL / REJECTED / MANUAL_REVIEW + structured rejection reasons + confidence score
 
-Checks (all must pass for APPROVED):
-1. Member exists and policy is active
-2. Treatment date within claim submission deadline (30 days)
-3. Initial waiting period passed (30 days from join date)
-4. Condition-specific waiting period passed (diabetes: 90 days, etc.)
-5. Treatment not in exclusions list
-6. Claim category is covered
-7. Claimed amount ≤ per-claim limit (₹5,000)
-8. Claimed amount ≤ remaining annual OPD limit
-9. Category sub-limit not exceeded
-10. Pre-authorization obtained if required (MRI > ₹10,000, CT Scan, etc.)
-11. For dental: each line item checked against covered/excluded procedures
-12. Network hospital? Apply discount before co-pay (order matters — TC010)
-13. Compute approved amount: `(claimed - network_discount) - co_pay`
+**Confidence gate (Python, runs after Gemini returns):**
+- ≥ 0.75 → honor Gemini's decision
+- 0.50 – 0.74 → override to MANUAL_REVIEW regardless of Gemini's decision
+- < 0.50 → override to REJECTED
 
-Output: `PolicyCheckResult` with each check as a named pass/fail + computed approved amount + rejection reasons list.
+REJECTED and MANUAL_REVIEW from Gemini are always honored — the gate only overrides APPROVED/PARTIAL decisions with insufficient confidence.
+
+**Graceful degradation:** Gemini failure → APPROVED at confidence 0.50, `adjudicate` added to `failed_components`, manual review recommended in decision reason.
 
 ---
 
-### Agent 4: Fraud Detection Agent
-**Queries database for claims history.**
+### Node 5 — `save_to_db`
+**Pure Python. Runs last on every path that reaches a decision.**
 
-Checks:
-1. Same-day claims count for this member (threshold: 2 per day → MANUAL_REVIEW at 3+)
-2. Document alteration flags from extraction (crossed-out amounts, duplicate stamps)
-3. High-value claim threshold (> ₹25,000 → MANUAL_REVIEW)
-4. Monthly claims count (> 6 → flag)
+Writes one `Claim` row and one `ClaimDocument` row per uploaded document to PostgreSQL. Stores the full `trace` JSONB so the Streamlit UI can reconstruct the decision audit trail without requiring LangSmith access.
 
-Output: `FraudCheckResult` with fraud score (0.0–1.0) + list of triggered signals. Does not auto-reject — routes to MANUAL_REVIEW.
+**Graceful degradation:** DB failure → `save_to_db` added to `failed_components`, pipeline still returns the decision to the caller. Data loss is flagged; the system does not crash.
 
 ---
 
-### Agent 5: Decision Agent
-**Aggregates all prior agent outputs into a final decision.**
-
-Logic:
-- If Document Validation failed → return the specific error (no decision)
-- If any Policy Check failed → REJECTED with all rejection reasons
-- If fraud score > 0.80 → MANUAL_REVIEW with fraud signals
-- If partial coverage (some line items excluded, some covered) → PARTIAL with itemized breakdown
-- If all checks pass → APPROVED with final approved amount
-- If any component failed mid-run (graceful degradation) → note it, reduce confidence, recommend manual review
-
-Confidence score: computed using the deterministic penalty formula defined in Section 14, Layer 3. The Decision Agent receives all prior agent outputs and applies the formula once to produce the final score.
-
-Output: `ClaimDecision` — the final API response.
-
----
-
-## 7. Database Schema
+## 8. Database Schema
 
 ```sql
 -- One row per submitted claim
@@ -373,7 +351,7 @@ claim_documents (
 
 ---
 
-## 8. API Contract
+## 9. API Contract
 
 ### `POST /api/claims`
 Submit a claim for processing.
@@ -433,27 +411,6 @@ Health check for Render.
 
 ---
 
-## 9. n8n Integration (Extension — built after core)
-
-n8n acts as the **channel layer only**. It has no claims logic.
-
-**WhatsApp flow (Twilio sandbox):**
-1. Member messages the WhatsApp number
-2. n8n AI Agent node collects: member ID, claim category, amount, treatment date
-3. n8n asks for documents one by one (as image attachments)
-4. Once all collected → n8n HTTP Request node calls `POST /api/claims`
-5. n8n sends the decision back as a WhatsApp message
-
-**Email flow (Gmail trigger):**
-1. n8n Gmail trigger on new email to claims inbox
-2. Extracts attachments + email body fields
-3. Calls `POST /api/claims`
-4. Replies to the email with the decision
-
-n8n does not need to know about LangGraph, agents, or policy rules. It only speaks to the API.
-
----
-
 ## 10. Observability
 
 Three layers, no extra tooling needed:
@@ -462,9 +419,9 @@ Three layers, no extra tooling needed:
 |-------|------|----------------|
 | AI pipeline | **LangSmith** | Per-claim trace: which agent ran, inputs/outputs, why confidence dropped, latency per agent |
 | Infra metrics | **Render dashboard** (built-in) | CPU, memory, response times, request throughput, deploy logs |
-| Uptime | **UptimeRobot** (free external) | Up/down status, avg response time graph, downtime incidents, alerts — NOT a full APM; does not show what failed inside the app |
+| Uptime | **cron-job.org** (free external) | Scheduled pings every 5 min, execution history, failure notifications — NOT a full APM; does not show what failed inside the app |
 
-UptimeRobot's role is keep-alive pings (prevents Render free tier cold starts) + alerting if the service actually dies. All deeper "what failed and why" comes from LangSmith + PostgreSQL.
+cron-job.org's role is keep-alive pings (prevents Render free tier cold starts) + alerting if the service actually dies. All deeper "what failed and why" comes from LangSmith + PostgreSQL.
 
 **The `trace` JSONB column in PostgreSQL** is a copy of the LangGraph state at the end of the run — used by the Streamlit UI to show the trace without requiring a LangSmith login.
 
@@ -499,7 +456,7 @@ Infrastructure:
 - `.env.example` (committed) — keys only, no values, in sync with `.env.dev`
 - `.gitignore` — ignores `.env`, `.env.dev`, `.vscode/`, `.claude/`, `__pycache__/`
 - Git repo initialized, connected to GitHub, deployed on Render
-- UptimeRobot configured to ping both services every 5 min
+- cron-job.org configured to ping both services every 5 min
 
 Monorepo structure:
 - `backend/` — FastAPI service with `backend/requirements.in` + `backend/requirements.txt`
@@ -598,7 +555,6 @@ Morning:
 
 Afternoon:
 - Record demo video (8–12 min): wrong-doc error → full approval trace → one proud decision + one regret
-- n8n WhatsApp/email setup (stretch — only if time permits)
 - Final commit, clean up repo, verify deployed URLs
 - Submit
 
@@ -606,13 +562,13 @@ Afternoon:
 
 ## 13. Deliverables Checklist
 
-- [ ] Working system with deployed URL (Render)
-- [ ] GitHub repo with clean commit history
+- [x] Working system with deployed URL (Render)
+- [x] GitHub repo with clean commit history
+- [x] Tests: pytest for every agent (extraction, adjudication, document validation)
 - [ ] Architecture document (`docs/architecture.md`)
 - [ ] Component contracts (`docs/contracts.md`) — input/output/errors for each agent
 - [ ] Eval report (`docs/eval_report.md`) — all 12 test cases with decision + trace
 - [ ] Demo video (8–12 min): wrong-doc error, full approval trace, one proud decision + one regret
-- [ ] Tests: pytest for every agent (mocked LLM responses)
 
 ---
 
@@ -630,18 +586,8 @@ variance = cv2.Laplacian(gray, cv2.CV_64F).var()
 This is objective, deterministic, costs nothing, and protects Gemini quota from garbage image inputs.
 PDFs skip this check — Gemini accepts them natively and reports unreadable pages within its extraction response (low confidence fields or explicit null values).
 
-### Layer 2 — Gemini 2.5 Flash Field Confidence (logprobs — objective)
-We use `response_logprobs=True` in the Gemini call — this returns the model's actual token-level log probabilities, not a self-reported number. This is more reliable than asking Gemini to guess its own confidence.
-
-```python
-# confidence per token = math.exp(logprob)
-# confidence per field = mean across all tokens in that field's value
-```
-
-Fields where Gemini returns `null` (not found) → `confidence = 0.0`.
-All per-field confidences stored in `claim_documents.extraction` JSONB and visible in the UI trace.
-
-See `docs/technical_notes.md` for the full Gemini call pattern with logprobs.
+### Layer 2 — Gemini Extraction Confidence (self-reported)
+Gemini fills a `confidence: float` field in the response schema based on its own assessment — legibility, stamp obscurement, missing fields. Fields where Gemini returns `null` (not found) → `confidence = 0.0`. All per-field confidences stored in `claim_documents.extraction` JSONB and visible in the UI trace.
 
 ### Layer 3 — Decision Confidence Score (deterministic formula)
 
@@ -712,7 +658,7 @@ pydantic-settings
 python-dotenv
 ```
 
-Note: Agent nodes call `google-generativeai` SDK directly (not via LangChain wrapper) to preserve access to `response_logprobs=True`. `langchain-google-genai` is kept only for LangGraph's tracing hooks. See `docs/technical_notes.md`.
+Note: `langchain-google-genai` is used for all Gemini calls via LangChain's `with_structured_output` — this keeps LangSmith tracing seamless across all pipeline nodes.
 
 ```
 # .env
@@ -735,9 +681,9 @@ Gemini accepts PDFs natively — no poppler, no pdf2image.
 
 | # | Question | Decision |
 |---|----------|----------|
-| 1 | Document upload format | **base64 in JSON body** — single endpoint, curl-testable, n8n-compatible |
+| 1 | Document upload format | **base64 in JSON body** — single endpoint, curl-testable |
 | 2 | Frontend | **Streamlit** — Python-native, fast to build, sufficient for demo |
 | 3 | TC009 claims history | **Accept as optional `claims_history` input field** — matches test case JSON, no DB seeding needed |
 | 4 | LangSmith acceptable? | **Yes** — free tier, key in `.env.example`, no vendor lock-in |
 | 5 | Docker needed? | **No** — Render native Python buildpack handles everything |
-| 6 | Keep-alive strategy | **UptimeRobot** (external, free) — pings `/api/health` every 5 min; also alerts on real downtime |
+| 6 | Keep-alive strategy | **cron-job.org** (external, free) — pings `/api/health` every 5 min; also alerts on real downtime |
