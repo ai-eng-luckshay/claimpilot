@@ -17,7 +17,7 @@ st.set_page_config(
 def _render_sidebar() -> None:
     with st.sidebar:
         st.markdown("## 🏥 ClaimPilot")
-        st.caption("AI-powered health insurance claims | Plum")
+        st.caption("AI-powered Automated Health Insurance Claims Processing | Plum")
         st.divider()
 
         health = call_health()
@@ -34,7 +34,7 @@ def _render_sidebar() -> None:
             st.error("API offline")
 
         st.divider()
-        st.caption(f"`{API_URL}`")
+        st.caption("Backend API Host URL: "+ f"`{API_URL}`")
 
 
 def main() -> None:
