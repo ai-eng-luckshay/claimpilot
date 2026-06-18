@@ -8,7 +8,6 @@ projects:
           env: python
           plan: free
           buildCommand: pip install -r backend/requirements.txt
-          preDeployCommand: alembic upgrade head
           startCommand: uvicorn backend.src.main:app --host 0.0.0.0 --port $PORT
           envVars:
             - key: DATABASE_URL
@@ -25,6 +24,8 @@ projects:
               value: claimpilot
             - key: ENVIRONMENT
               value: prod
+            - key: API_BASE_URL
+              sync: false    # set manually: https://claimpilot-api.onrender.com
 
         - type: web
           name: claimpilot-ui
