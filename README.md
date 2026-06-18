@@ -67,7 +67,19 @@ Six-node LangGraph pipeline with two Gemini calls per claim:
 │           ├── claim_repository.py     # DB reads (get_claim, list_claims)
 │           └── dead_letter.py          # DLQ stub (NoOpDLQ)
 ├── frontend/
-│   └── app.py                          # Streamlit UI
+│   ├── app.py                          # Streamlit entry point
+│   ├── api.py                          # API client (requests to FastAPI)
+│   ├── config.py                       # frontend settings (API base URL)
+│   ├── views/
+│   │   ├── submit.py                   # claim submission form
+│   │   ├── history.py                  # claims history table
+│   │   └── test_cases.py               # pre-loaded test case runner
+│   ├── components/
+│   │   └── response.py                 # decision + trace display component
+│   └── data/
+│       ├── test_cases.json             # 12 test case definitions
+│       ├── generate_test_docs.py       # script to regenerate test documents
+│       └── test_docs/                  # TC001–TC012 document sets (jpg + pdf)
 ├── scripts/
 │   └── clear_db.py                     # utility: wipe claims table (--confirm to run)
 ├── docs/
@@ -116,8 +128,6 @@ uvicorn backend.src.main:app --reload
 # Terminal 2 — Frontend (http://localhost:8501)
 streamlit run frontend/app.py
 ```
-
-**VS Code:** Run & Debug (`Ctrl+Shift+D`) → **Full Stack: API + UI**
 
 ## API Endpoints
 
