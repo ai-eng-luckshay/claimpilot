@@ -270,7 +270,29 @@ Migrations are managed by **Alembic** (`backend/migrations/`). `migrations/env.p
 
 ---
 
-### 3.13 Observability
+### 3.13 Deployment (CI/CD via GitHub → Render)
+
+Deployment is fully automated. Every `git push` to the `master` branch on GitHub triggers a Render build-and-deploy with no manual steps.
+
+**Infrastructure definition** (`render.yaml` in the repo root): Three resources are declared as code:
+
+| Resource | Type | Config |
+|---|---|---|
+| `claimpilot-api` | Python web service | `pip install -r backend/requirements.txt` → `uvicorn backend.src.main:app` |
+| `claimpilot-ui` | Python web service | `pip install -r frontend/requirements.txt` → `streamlit run frontend/app.py` |
+| `claimpilot-db` | PostgreSQL (free tier) | `DATABASE_URL` injected into `claimpilot-api` via `fromDatabase` binding |
+
+**Environment variables** — `DATABASE_URL` is injected automatically from the Render-managed database. `GOOGLE_API_KEY`, `LANGSMITH_API_KEY`, and `API_BASE_URL` are marked `sync: false` — they are set once in the Render dashboard and are never committed to the repo.
+
+**Database URL translation** — Render's `connectionString` property returns a `postgres://` URL. `models/database.py` rewrites it to `postgresql+asyncpg://` via `_to_async_url()` before passing it to `create_async_engine`. This translation is transparent to the rest of the app.
+
+**Alembic migrations** — run manually (`alembic upgrade head`) after schema changes before deploying the service that depends on them. `migrations/env.py` uses the same async URL derivation so migrations run against the live Render database using `asyncpg`.
+
+**Why render.yaml over manual dashboard setup:** Infrastructure changes are version-controlled alongside the code that requires them, can be reviewed in PRs, and reproduced from scratch with a single `git push`. The full rationale is in `design_decisions.md §2`.
+
+---
+
+### 3.14 Observability
 
 **LangSmith:** The LangGraph pipeline emits per-node traces automatically when `LANGCHAIN_API_KEY` and `LANGCHAIN_PROJECT` environment variables are set. Each node's input state and output updates are recorded. LangSmith provides the canonical reconstruction path for any claim.
 
