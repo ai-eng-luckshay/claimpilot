@@ -14,8 +14,12 @@ For EACH document, in order:
    medicines (list), hospital_name, line_items (list of description+amount),
    total (number), test_name — use null for missing or unreadable fields.
 3. Set quality_flags — include any that apply:
-   RUBBER_STAMP_OVER_TEXT, DOCUMENT_ALTERATION, MULTILINGUAL, PARTIAL_DOCUMENT
+   RUBBER_STAMP_OVER_TEXT, DOCUMENT_ALTERATION, MULTILINGUAL, PARTIAL_DOCUMENT, DOCUMENT_UNREADABLE
+   — Add DOCUMENT_UNREADABLE if the document is blurry, too dark/light, low resolution,
+     distorted, or otherwise visually degraded to the point where key fields cannot be read.
 4. Set confidence (0.0–1.0) based on how clearly you could read this document.
+   — Use < 0.5 for severely blurry or illegible documents, 0.5–0.79 for partially readable,
+     0.8–1.0 for clearly legible documents.
 
 ## Document Type Definitions (classify strictly by these)
 

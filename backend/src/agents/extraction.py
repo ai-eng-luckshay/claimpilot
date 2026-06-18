@@ -92,6 +92,10 @@ def _to_extracted_doc(ext: _DocumentExtraction, file_name: str) -> ExtractedDocu
     if ext.line_items:
         line_items = [LineItem(description=li.description, amount=li.amount) for li in ext.line_items]
 
+    quality_flags = list(ext.quality_flags)
+    if ext.confidence < 0.8 and "DOCUMENT_UNREADABLE" not in quality_flags:
+        quality_flags.append("DOCUMENT_UNREADABLE")
+
     return ExtractedDocument(
         classified_type=ext.classified_type,
         file_name=file_name,
@@ -105,7 +109,7 @@ def _to_extracted_doc(ext: _DocumentExtraction, file_name: str) -> ExtractedDocu
         line_items=line_items,
         total=ext.total,
         test_name=ext.test_name,
-        quality_flags=ext.quality_flags,
+        quality_flags=quality_flags,
         overall_confidence=ext.confidence,
     )
 
