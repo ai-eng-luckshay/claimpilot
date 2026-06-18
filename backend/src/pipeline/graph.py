@@ -2,10 +2,12 @@
 from langgraph.graph import StateGraph, END
 
 from backend.src.pipeline.state import ClaimState
-from backend.src.agents.document_validation import blur_gate, validate_documents
-from backend.src.agents.extraction import extract_documents, reject_patient_mismatch
+from backend.src.agents.blur_gate import blur_gate
+from backend.src.agents.validate_documents import validate_documents
+from backend.src.agents.extraction import extract_documents
+from backend.src.agents.patient_name_check import reject_patient_mismatch
 from backend.src.agents.adjudicate import adjudicate_claim
-from backend.src.agents.decision import save_to_db
+from backend.src.agents.save_to_db import save_to_db
 
 
 def _route_after_blur(state: ClaimState) -> str:

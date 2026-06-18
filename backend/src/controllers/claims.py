@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from backend.src.config import logger_config
 from backend.src.models.database import get_db
 from backend.src.schemas.claim import ClaimSubmitRequest, ClaimResponse, DocumentValidationError
-from backend.src.services.claims import process_claim, get_claim_by_id, list_member_claims
+from backend.src.services.claim_processor import process_claim
+from backend.src.services.claim_repository import get_claim_by_id, list_member_claims
 
 claims_router = APIRouter(tags=["Claims"])
 

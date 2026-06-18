@@ -5,7 +5,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, Field
 
-from backend.src.agents.prompts import ADJUDICATION_INSTRUCTIONS
+from backend.src.agents.prompts.adjudication import ADJUDICATION_INSTRUCTIONS
 from backend.src.config.logger_config import error_logger, application_logger
 from backend.src.pipeline.state import ClaimState
 from backend.src.services.llm import get_llm_service
