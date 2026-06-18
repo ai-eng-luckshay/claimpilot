@@ -2,7 +2,8 @@
 from typing import Any
 from unittest.mock import patch
 
-from backend.src.agents.document_validation import blur_gate, validate_documents
+from backend.src.agents.blur_gate import blur_gate
+from backend.src.agents.validate_documents import validate_documents
 from backend.tests.conftest import make_state
 
 
@@ -108,7 +109,7 @@ def test_tc002_blurry_image_stops_flow():
     state = make_state({"documents": [
         {"file_name": "blurry.jpg", "mime_type": "image/jpeg", "file_data": "AABB"},
     ]})
-    with patch("backend.src.agents.document_validation._blur_variance", return_value=10.0):
+    with patch("backend.src.agents.blur_gate._blur_variance", return_value=10.0):
         result = blur_gate(state)
 
     assert result["blur_check_passed"] is False
@@ -152,7 +153,7 @@ def test_tc002_sharp_image_passes():
     state = make_state({"documents": [
         {"file_name": "clear.jpg", "mime_type": "image/jpeg", "file_data": "AABB"},
     ]})
-    with patch("backend.src.agents.document_validation._blur_variance", return_value=250.0):
+    with patch("backend.src.agents.blur_gate._blur_variance", return_value=250.0):
         result = blur_gate(state)
     assert result["blur_check_passed"] is True
 
@@ -170,7 +171,7 @@ def test_tc002_blur_gate_stops_on_first_blurry_doc():
         call_count += 1
         return 10.0  # always blurry
 
-    with patch("backend.src.agents.document_validation._blur_variance", side_effect=_fake_variance):
+    with patch("backend.src.agents.blur_gate._blur_variance", side_effect=_fake_variance):
         result = blur_gate(state)
 
     assert result["blur_check_passed"] is False

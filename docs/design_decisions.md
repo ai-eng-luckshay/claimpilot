@@ -257,3 +257,97 @@ The stub in `services/claims.py` shows the exact query: prior claims ordered by 
 | Fraud context accuracy | Depends on caller honesty | Authoritative |
 | Production-safe | No | Yes |
 | Right for this demo | Yes | Right for production extension |
+
+---
+
+## 8. Database Locking — Why Neither Pessimistic Nor Optimistic Locking Is Used
+
+### What was considered
+
+Two classical approaches to preventing concurrent write conflicts in a relational database:
+
+1. **Pessimistic locking** (`SELECT FOR UPDATE`) — lock the relevant rows at read time. Any other transaction that tries to read the same rows blocks until the first transaction commits. Guarantees correctness but serialises all concurrent operations on the same member.
+2. **Optimistic locking** (version column or updated_at timestamp check) — read without locking, do work, then check at write time whether another transaction modified the record since the read. If yes, retry or reject. Better throughput under low contention; requires retry logic.
+
+### The race condition that locking would prevent
+
+When two claims for the same member arrive simultaneously, both pipeline instances read `ytd_claims_amount` from the request payload, both see it is below the annual OPD limit, both get approved by Gemini, and both write to the database. Neither saw the other's approval. Together they exceed the annual limit, but neither was rejected.
+
+The same race applies to the `same_day_claims_limit` fraud check: two claims submitted at the same time for the same member both see each other's absent from `claims_history`, so neither triggers the fraud flag.
+
+### Why neither is implemented
+
+**The pipeline never reads from the DB during processing.**
+`ytd_claims_amount` and `claims_history` are frontend-supplied (see Decision 7). The pipeline receives these values in the request payload and passes them to Gemini — it does not query the `claims` table mid-flight. There is no DB read to lock. The race condition exists at the application layer (two requests with stale payload values) but has no DB transaction to attach locking to.
+
+**Claims are insert-only.**
+`save_to_db` always inserts a new row — it never updates an existing claim record. There is no shared mutable row being read and rewritten by concurrent transactions, which is the classical scenario locking is designed for. Record-level `SELECT FOR UPDATE` has no target here.
+
+**The demo operates under no concurrent load.**
+The assignment involves 12 test cases run sequentially by a single user. Concurrent claim submissions for the same member do not occur in practice. Implementing locking for a race that cannot be triggered during evaluation would add complexity with no observable benefit.
+
+**High-value claims are routed to manual review.**
+`fraud_thresholds.auto_manual_review_above` is ₹25,000. Any claim above this threshold is automatically sent to MANUAL_REVIEW, where a human would catch a double-approval before funds are disbursed. This provides a partial safety net for the highest-risk cases.
+
+### When locking becomes necessary
+
+The risk materialises the moment Decision 7's production extension is implemented — when `_fetch_member_claims_context` queries the DB for real YTD data instead of trusting the frontend payload. At that point:
+
+- The YTD query (`SELECT SUM(approved_amount) FROM claims WHERE member_id = ? AND ...`) must be wrapped in a `SELECT FOR UPDATE` on the member's claims rows, or the entire transaction must run at `SERIALIZABLE` isolation level.
+- The same protection is needed for the fraud history query, so that two simultaneous same-day claims cannot both pass the `same_day_claims_limit` check.
+
+Optimistic locking (a `version` integer column on a `member_limits` table) would be an alternative with better throughput: read the current YTD and version, run the pipeline, then `UPDATE member_limits SET ytd = ?, version = version + 1 WHERE member_id = ? AND version = ?` at write time. If another transaction committed first, `rowcount == 0` triggers a retry or a MANUAL_REVIEW escalation.
+
+### Summary
+
+| Concern | Pessimistic locking | Optimistic locking | Current (no locking) |
+|---------|--------------------|--------------------|----------------------|
+| Prevents YTD race condition | Yes | Yes (with retry) | No |
+| Prevents fraud count race | Yes | Yes (with retry) | No |
+| Throughput under concurrency | Low — serialises per member | High | High |
+| Implementation complexity | Low | Medium | None |
+| Correct for current design | N/A — no DB read to lock | N/A | Yes |
+| Required when DB-queried YTD is added | Yes (or serialisable isolation) | Yes (version column) | No |
+
+---
+
+## 9. `reject_patient_mismatch` as a Dedicated Node — Why Not Merge Into `validate_documents`
+
+### What was considered
+
+After extraction, when `patient_name_consistent` is false, the claim must be rejected before adjudication. Two options:
+
+1. **Dedicated node** — a `reject_patient_mismatch` node in the graph, reached via a conditional edge from `extract_documents`.
+2. **Merged into `validate_documents`** — patient name mismatch becomes the first check inside `validate_documents`, before document-type rules.
+
+Since `reject_patient_mismatch` is mechanically simple (it reads a state flag and writes a rejection dict), merging it into `validate_documents` is tempting.
+
+### Why the dedicated node was kept
+
+**Different type of failure, different policy dimension.**
+`validate_documents` answers: *"Does this claim have the right paperwork for its category?"* — a document-completeness check against `policy_terms.json` document requirements. `reject_patient_mismatch` answers: *"Are all documents in this submission for the same person?"* — an identity integrity check, closer to fraud detection than to document validation. These are different failure reasons with different downstream implications (a missing document can sometimes be resubmitted; an identity mismatch requires a human investigation). Keeping them in separate nodes makes the cause of each rejection unambiguous.
+
+**Graph topology is the audit trail.**
+In LangGraph, the node sequence is recorded in the `trace` JSONB column and visible in LangSmith. A trace showing `extract_documents → reject_patient_mismatch → save_to_db` tells an auditor exactly what happened without reading the rejection reason text. A trace showing `extract_documents → validate_documents → save_to_db` would require inspecting the decision_reason to determine whether it was a name mismatch or a missing document — indistinguishable from the graph alone.
+
+**Routing clarity across three failure modes.**
+After `extract_documents`, there are three explicit branches:
+- Extraction LLM failed → `save_to_db` (MANUAL_REVIEW)
+- Patient name mismatch → `reject_patient_mismatch` → `save_to_db`
+- Both checks passed → `validate_documents`
+
+All three branches are conditional edges on `extract_documents`, visible in the graph definition. If patient name handling were inside `validate_documents`, one of those branches would be hidden inside a node rather than expressed in the graph structure — making it invisible to anyone reading `graph.py` for a high-level understanding of the pipeline.
+
+**`validate_documents` stays pure Python and deterministic.**
+`validate_documents` currently has no state mutation beyond computing whether required document types are present. It is fast, deterministic, and requires no LLM call. Merging an identity check into it would not change this, but it would give the node two unrelated responsibilities — making its test cases harder to reason about (a test that sends mismatched names would need to also set up valid documents, or vice versa).
+
+### Summary
+
+| Concern | Dedicated node | Merged into `validate_documents` |
+|---------|---------------|----------------------------------|
+| Failure cause in audit trail | Unambiguous — node name says it | Requires reading rejection text |
+| Graph readability | All post-extraction branches in graph.py | One branch hidden inside a node |
+| Separation of concerns | Identity check vs. document check | Two concerns in one node |
+| Node responsibility | Single | Mixed |
+| Implementation complexity | Same | Same |
+| Right choice | Yes | No |

@@ -106,25 +106,25 @@ def test_tc011_trace_shows_skipped():
 # ---------------------------------------------------------------------------
 
 def test_graceful_pass_on_llm_exception():
-    """LLM throws → adjudicate in failed_components, APPROVED at confidence 0.50."""
+    """LLM throws → adjudicate in failed_components, MANUAL_REVIEW at confidence 0.50."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
         mock_svc.return_value.structured_call.side_effect = Exception("Gemini timeout")
         result = adjudicate_claim(state)
 
-    assert result["decision"] == "APPROVED"
+    assert result["decision"] == "MANUAL_REVIEW"
     assert result["confidence_score"] == pytest.approx(0.50)
     assert "adjudicate" in result["failed_components"]
 
 
 def test_graceful_pass_on_policy_load_failure():
-    """Policy file unreadable → adjudicate in failed_components, APPROVED at 0.50."""
+    """Policy file unreadable → adjudicate in failed_components, MANUAL_REVIEW at 0.50."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_policy_context",
                side_effect=FileNotFoundError("policy_terms.json missing")):
         result = adjudicate_claim(state)
 
-    assert result["decision"] == "APPROVED"
+    assert result["decision"] == "MANUAL_REVIEW"
     assert result["confidence_score"] == pytest.approx(0.50)
     assert "adjudicate" in result["failed_components"]
 

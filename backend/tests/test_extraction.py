@@ -12,8 +12,8 @@ from backend.src.agents.extraction import (
     _AllDocumentsExtraction,
     _DocumentExtraction,
     extract_documents,
-    reject_patient_mismatch,
 )
+from backend.src.agents.patient_name_check import reject_patient_mismatch
 from backend.src.pipeline.state import ClaimState
 from backend.tests.conftest import make_state
 
@@ -106,15 +106,18 @@ def test_extraction_truncates_extra_llm_results():
 
 
 def test_extraction_graceful_on_llm_error():
-    """LLM failure → extraction_agent in failed_components, UNKNOWN stubs, name check assumed OK."""
+    """LLM failure → extraction_failed=True, MANUAL_REVIEW set, pipeline short-circuits."""
     state = _state_one_doc()
     with patch("backend.src.agents.extraction._call_llm",
                side_effect=Exception("Network timeout")):
         result = extract_documents(state)
 
-    assert result["extraction_complete"] is True
+    assert result["extraction_complete"] is False
+    assert result["extraction_failed"] is True
+    assert result["extracted_documents"] == []
+    assert result["decision"] == "MANUAL_REVIEW"
+    assert result["approved_amount"] is None
     assert "extraction_agent" in result["failed_components"]
-    assert result["extracted_documents"][0]["classified_type"] == "UNKNOWN"
     assert result["patient_name_consistent"] is True  # safe default on failure
 
 

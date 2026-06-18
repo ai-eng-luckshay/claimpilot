@@ -16,19 +16,14 @@ return a complete adjudication decision.
 1. **Member existence**: If member is null in policy context → MEMBER_NOT_FOUND.
 2. **Initial waiting period**: coverage_start = join_date + initial_waiting_period_days.
    Reject as INITIAL_WAITING_PERIOD if treatment_date < coverage_start.
-3. **Exclusions**: Reject as EXCLUDED_CONDITION if any diagnosis, line item, or medicine matches:
-   - Bariatric surgery (keyword: bariatric)
-   - Obesity/weight loss programs (keywords: morbid obesity, obesity treatment, weight loss program)
-   - Cosmetic or aesthetic procedures (keywords: cosmetic, aesthetic, liposuction, rhinoplasty, bleaching)
-   - Substance abuse treatment
-   - Infertility and assisted reproduction (keywords: infertility, ivf, iui)
-   - Experimental treatments
-   - Self-inflicted injuries
+3. **Exclusions**: Reject as EXCLUDED_CONDITION if any diagnosis, line item, or medicine matches
+   any entry in `exclusions.conditions` from the policy context (case-insensitive substring match).
+   Also check `claim_category_config.excluded_procedures` for DENTAL and
+   `claim_category_config.excluded_items` for VISION.
 4. **Condition-specific waiting periods** — STRICT word-boundary match only:
    "herniation" is NOT "hernia". Do NOT flag hernia waiting period for "Lumbar Disc Herniation".
-   Reject as WAITING_PERIOD if treatment_date < (join_date + condition_wait_days):
-   diabetes=90d, hypertension=90d, thyroid_disorders=90d, joint_replacement=730d,
-   maternity=270d, mental_health=180d, obesity_treatment=365d, hernia=365d, cataract=365d.
+   Reject as WAITING_PERIOD if treatment_date < (join_date + condition_wait_days).
+   Use `waiting_periods.specific_conditions` from the policy context for the exact day values.
 5. **Pre-authorization (DIAGNOSTIC only)**: Reject as PRE_AUTH_MISSING if MRI, CT Scan, or PET Scan
    is present AND claimed_amount > pre_auth_threshold (from policy, default ₹10,000).
    Assume no pre-auth unless explicitly stated in documents.
@@ -54,11 +49,11 @@ Network discount + copay:
   1. Check if hospital_name (from request or extracted docs) matches any entry in network_hospitals
      (case-insensitive substring match). Set is_network_hospital accordingly.
   2. actual_discount_pct = network_discount_percent from claim_category_config if in-network, else 0.
-  3. after_discount = eligible_base × (1 - actual_discount_pct / 100)
-  4. copay_amount = after_discount × (copay_percent / 100)
+  3. after_discount = eligible_base x (1 - actual_discount_pct / 100)
+  4. copay_amount = after_discount x (copay_percent / 100)
   5. approved_amount = after_discount - copay_amount
 
-### Step 4 — Confidence Score (0.0–1.0)
+### Step 4 — Confidence Score (0.0-1.0)
 Start at 0.9. Deduct: 0.15 per failed_component, 0.10 if manual_review, 0.03 per warning.
 APPROVED/PARTIAL/REJECTED: clamp to [0.70, 1.0]. MANUAL_REVIEW: clamp to [0.50, 0.80].
 
@@ -83,7 +78,7 @@ In such cases:
 - Set decision=MANUAL_REVIEW and approved_amount=null
 - Explain clearly in decision_reason what was ambiguous and what a human reviewer should check
 - Add a descriptive entry to warnings listing the specific ambiguity
-- Set confidence_score appropriately low (0.50–0.65)
+- Set confidence_score appropriately low (0.50-0.65)
 
 Golden rule: it is always safer to route to manual review than to make an incorrect automated
 decision. A wrongly approved claim causes financial loss; a wrongly rejected claim harms the member.
