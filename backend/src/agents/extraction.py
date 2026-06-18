@@ -202,21 +202,53 @@ async def extract_documents(state: ClaimState) -> dict:
             },
         }
 
+    unreadable_files = [
+        ed["file_name"] for ed in extracted
+        if "DOCUMENT_UNREADABLE" in ed.get("quality_flags", [])
+    ]
+
+    trace_payload = {
+        **state.get("trace", {}),
+        "extraction": {
+            "agent": "extraction",
+            "single_gemini_call": True,
+            "document_count": len(documents),
+            "patient_name_consistent": patient_name_consistent,
+            "documents": trace_entries,
+        },
+    }
+
+    if unreadable_files:
+        error_logger.warning(
+            "extract_documents: unreadable document(s) detected — %s", unreadable_files
+        )
+        names = ", ".join(unreadable_files)
+        return {
+            "extracted_documents": extracted,
+            "extraction_complete": True,
+            "extraction_failed": False,
+            "has_unreadable_documents": True,
+            "patient_name_consistent": patient_name_consistent,
+            "patient_name_mismatch_details": patient_name_mismatch_details,
+            "decision": "REJECTED",
+            "approved_amount": None,
+            "confidence_score": 0.0,
+            "decision_reason": (
+                f"The following document(s) are too blurry or unreadable to process: {names}. "
+                "Please re-upload clearer copies."
+            ),
+            "rejection_reasons": ["DOCUMENT_UNREADABLE"],
+            "failed_components": failed_components,
+            "trace": trace_payload,
+        }
+
     return {
         "extracted_documents": extracted,
         "extraction_complete": True,
         "extraction_failed": False,
+        "has_unreadable_documents": False,
         "patient_name_consistent": patient_name_consistent,
         "patient_name_mismatch_details": patient_name_mismatch_details,
         "failed_components": failed_components,
-        "trace": {
-            **state.get("trace", {}),
-            "extraction": {
-                "agent": "extraction",
-                "single_gemini_call": True,
-                "document_count": len(documents),
-                "patient_name_consistent": patient_name_consistent,
-                "documents": trace_entries,
-            },
-        },
+        "trace": trace_payload,
     }

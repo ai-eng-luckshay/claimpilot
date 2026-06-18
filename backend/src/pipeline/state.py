@@ -24,6 +24,9 @@ class ClaimState(TypedDict, total=False):
     validation_passed: bool
     validation_error: dict | None
 
+    # Unreadable document gate (confidence < 0.8 after extraction)
+    has_unreadable_documents: bool
+
     # Patient name cross-check (returned by extraction agent, Gemini-evaluated)
     patient_name_consistent: bool
     patient_name_mismatch_details: str | None

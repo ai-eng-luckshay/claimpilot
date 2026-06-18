@@ -17,6 +17,8 @@ def _route_after_blur(state: ClaimState) -> str:
 def _route_after_extraction(state: ClaimState) -> str:
     if state.get("extraction_failed"):
         return "save_to_db"  # decision already set to MANUAL_REVIEW in extraction node
+    if state.get("has_unreadable_documents"):
+        return "save_to_db"  # decision already set to REJECTED in extraction node
     if not state.get("patient_name_consistent", True):
         return "reject_patient_mismatch"
     return "validate_documents"
