@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     database_url: str = ""
     environment: str = "dev"
 
-    api_base_url: str = "http://localhost:8000"
+    api_base_url: str = ""
     llm_provider: str = "gemini"  # switch via LLM_PROVIDER env var
 
     LOGGER_DEBUG_FLAG: str = "N"
