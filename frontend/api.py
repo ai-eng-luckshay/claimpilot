@@ -15,7 +15,7 @@ def call_health() -> dict | None:
 
 def submit_claim(payload: dict) -> tuple[int, dict]:
     try:
-        r = httpx.post(f"{API_URL}/api/claims", json=payload, timeout=_timeout(60))
+        r = httpx.post(f"{API_URL}/api/claims", json=payload, timeout=_timeout(180))
         return r.status_code, r.json()
     except Exception as e:
         return 500, {"detail": str(e)}
