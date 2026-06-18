@@ -47,8 +47,8 @@ class _AllDocumentsExtraction(BaseModel):
 # LLM call (provider-agnostic via LLMService)
 # ---------------------------------------------------------------------------
 
-def _call_llm(documents: list[dict]) -> _AllDocumentsExtraction:
-    """Single LLM call for all documents. Returns full extraction result including name check."""
+async def _call_llm(documents: list[dict]) -> _AllDocumentsExtraction:
+    """Single async LLM call for all documents."""
     content_blocks: list[dict] = []
     for i, doc in enumerate(documents):
         content_blocks.append({
@@ -66,7 +66,7 @@ def _call_llm(documents: list[dict]) -> _AllDocumentsExtraction:
     try:
         result = cast(
             _AllDocumentsExtraction,
-            get_llm_service("extraction").structured_call(
+            await get_llm_service("extraction").structured_call(
                 EXTRACTION_PROMPT,
                 _AllDocumentsExtraction,
                 content_blocks=content_blocks,
@@ -111,10 +111,10 @@ def _to_extracted_doc(ext: _DocumentExtraction, file_name: str) -> ExtractedDocu
 
 
 # ---------------------------------------------------------------------------
-# LangGraph nodes
+# LangGraph node
 # ---------------------------------------------------------------------------
 
-def extract_documents(state: ClaimState) -> dict:
+async def extract_documents(state: ClaimState) -> dict:
     """
     LangGraph node: single Gemini call for all documents.
     Classifies each document, extracts all fields, and cross-checks patient names.
@@ -132,7 +132,7 @@ def extract_documents(state: ClaimState) -> dict:
         "extract_documents: starting extraction for %d document(s)", len(documents)
     )
     try:
-        result = _call_llm(documents)
+        result = await _call_llm(documents)
         patient_name_consistent = result.patient_name_consistent
         patient_name_mismatch_details = result.patient_name_mismatch_details
 
@@ -170,7 +170,7 @@ def extract_documents(state: ClaimState) -> dict:
             trace_entries.append({"file": fname, "classified_type": "UNKNOWN", "error": str(e)})
 
         # Route directly to save_to_db as MANUAL_REVIEW — no point calling adjudication
-        # Gemini already failed once; running it again on unreadable data adds no value.
+        # when Gemini already failed once; running it again on unreadable data adds no value.
         return {
             "extracted_documents": [],
             "extraction_complete": False,
@@ -216,4 +216,3 @@ def extract_documents(state: ClaimState) -> dict:
             },
         },
     }
-

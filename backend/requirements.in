@@ -4,6 +4,7 @@
 fastapi
 uvicorn[standard]
 psycopg2-binary
+asyncpg
 sqlalchemy
 alembic
 langchain-google-genai
@@ -16,3 +17,4 @@ pydantic-settings
 python-dotenv
 httpx
 pytest
+pytest-asyncio

@@ -1,5 +1,6 @@
 """Claim processing orchestrator — runs the LangGraph pipeline and maps the result to an API response."""
 
+import asyncio
 import uuid
 from typing import Union
 
@@ -11,7 +12,7 @@ from backend.src.schemas.claim import ClaimSubmitRequest, ClaimResponse, Documen
 from backend.src.services.file_storage import save_document, get_file_url
 
 
-def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentValidationError]:
+async def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentValidationError]:
 
     claim_id = str(uuid.uuid4())
     application_logger.info(
@@ -19,7 +20,8 @@ def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentV
         claim_id, request.member_id, request.claim_category, len(request.documents),
     )
 
-    saved_files = _persist_documents(claim_id, request)
+    # File I/O is blocking — run in a thread to avoid stalling the event loop.
+    saved_files = await asyncio.to_thread(_persist_documents, claim_id, request)
 
     initial_state = ClaimState(
         request=request.model_dump(mode="json"),
@@ -31,7 +33,7 @@ def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentV
 
     try:
         error_logger.info("process_claim: invoking pipeline for claim_id=%s", claim_id)
-        final_state = pipeline.invoke(initial_state)
+        final_state = await pipeline.ainvoke(initial_state)
         error_logger.info(
             "process_claim: pipeline complete claim_id=%s failed_components=%s",
             claim_id, final_state.get("failed_components", []),
@@ -66,7 +68,7 @@ def process_claim(request: ClaimSubmitRequest) -> Union[ClaimResponse, DocumentV
 
 
 def _persist_documents(claim_id: str, request: ClaimSubmitRequest) -> list[dict]:
-    """Save each document's raw bytes to disk. Returns a list of file records."""
+    """Save each document's raw bytes to disk. Sync — called via asyncio.to_thread."""
     records: list[dict] = []
     for i, doc in enumerate(request.documents):
         doc_type = doc.effective_type() or "UNKNOWN"
@@ -120,10 +122,8 @@ def _map_state_to_response(
             what_is_required=err.get("what_is_required"),
         )
 
-    # Full pipeline decision
     decision = final_state.get("decision") or "PENDING"
 
-    # Enrich saved_files with Gemini-classified doc type (extraction runs after file save)
     classified_by_name = {
         doc.get("file_name", ""): doc.get("classified_type", "UNKNOWN")
         for doc in final_state.get("extracted_documents", [])

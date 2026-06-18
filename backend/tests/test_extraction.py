@@ -4,7 +4,7 @@ TC003 (patient name mismatch) is now detected by the extraction Gemini call,
 surfaced via patient_name_consistent=False, and handled by reject_patient_mismatch node.
 """
 from typing import Literal, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -62,12 +62,12 @@ def _state_one_doc() -> ClaimState:
 # extract_documents — LLM mocked
 # ---------------------------------------------------------------------------
 
-def test_extraction_sets_classified_type():
+async def test_extraction_sets_classified_type():
     """extract_documents maps LLM output to classified_type field."""
     state = _state_one_doc()
     mock_result = _fake_result([_doc("PRESCRIPTION", "Rajesh Kumar", 0.9)])
-    with patch("backend.src.agents.extraction._call_llm", return_value=mock_result):
-        result = extract_documents(state)
+    with patch("backend.src.agents.extraction._call_llm", new_callable=AsyncMock, return_value=mock_result):
+        result = await extract_documents(state)
 
     assert result["extraction_complete"] is True
     docs = result["extracted_documents"]
@@ -77,7 +77,7 @@ def test_extraction_sets_classified_type():
     assert docs[0]["overall_confidence"] == pytest.approx(0.9)
 
 
-def test_extraction_pads_missing_docs_as_unknown():
+async def test_extraction_pads_missing_docs_as_unknown():
     """LLM returning fewer results than docs → pad with UNKNOWN at confidence 0."""
     state = make_state({
         "claim_category": "CONSULTATION",
@@ -87,8 +87,8 @@ def test_extraction_pads_missing_docs_as_unknown():
         ],
     })
     mock_result = _fake_result([_doc("PRESCRIPTION", "Rajesh Kumar", 0.8)])
-    with patch("backend.src.agents.extraction._call_llm", return_value=mock_result):
-        result = extract_documents(state)
+    with patch("backend.src.agents.extraction._call_llm", new_callable=AsyncMock, return_value=mock_result):
+        result = await extract_documents(state)
 
     docs = result["extracted_documents"]
     assert len(docs) == 2
@@ -96,21 +96,21 @@ def test_extraction_pads_missing_docs_as_unknown():
     assert docs[1]["overall_confidence"] == pytest.approx(0.0)
 
 
-def test_extraction_truncates_extra_llm_results():
+async def test_extraction_truncates_extra_llm_results():
     """LLM returning more results than docs → extra results are ignored."""
     state = _state_one_doc()
     mock_result = _fake_result([_doc("PRESCRIPTION"), _doc("HOSPITAL_BILL")])
-    with patch("backend.src.agents.extraction._call_llm", return_value=mock_result):
-        result = extract_documents(state)
+    with patch("backend.src.agents.extraction._call_llm", new_callable=AsyncMock, return_value=mock_result):
+        result = await extract_documents(state)
     assert len(result["extracted_documents"]) == 1
 
 
-def test_extraction_graceful_on_llm_error():
+async def test_extraction_graceful_on_llm_error():
     """LLM failure → extraction_failed=True, MANUAL_REVIEW set, pipeline short-circuits."""
     state = _state_one_doc()
     with patch("backend.src.agents.extraction._call_llm",
-               side_effect=Exception("Network timeout")):
-        result = extract_documents(state)
+               new_callable=AsyncMock, side_effect=Exception("Network timeout")):
+        result = await extract_documents(state)
 
     assert result["extraction_complete"] is False
     assert result["extraction_failed"] is True
@@ -121,17 +121,17 @@ def test_extraction_graceful_on_llm_error():
     assert result["patient_name_consistent"] is True  # safe default on failure
 
 
-def test_extraction_trace_populated():
+async def test_extraction_trace_populated():
     """Trace must contain extraction entry with document_count and name_consistent."""
     state = _state_one_doc()
     mock_result = _fake_result([_doc()])
-    with patch("backend.src.agents.extraction._call_llm", return_value=mock_result):
-        result = extract_documents(state)
+    with patch("backend.src.agents.extraction._call_llm", new_callable=AsyncMock, return_value=mock_result):
+        result = await extract_documents(state)
     assert result["trace"]["extraction"]["document_count"] == 1
     assert result["trace"]["extraction"]["patient_name_consistent"] is True
 
 
-def test_extraction_preserves_all_fields():
+async def test_extraction_preserves_all_fields():
     """All fields from _DocumentExtraction are mapped to ExtractedDocument."""
     state = _state_one_doc()
     ext = _doc(
@@ -142,8 +142,8 @@ def test_extraction_preserves_all_fields():
         confidence=0.85,
     )
     with patch("backend.src.agents.extraction._call_llm",
-               return_value=_fake_result([ext])):
-        result = extract_documents(state)
+               new_callable=AsyncMock, return_value=_fake_result([ext])):
+        result = await extract_documents(state)
     doc = result["extracted_documents"][0]
     assert doc["hospital_name"] == "Apollo Hospital"
     assert doc["diagnosis"] == "Fracture"
@@ -154,7 +154,7 @@ def test_extraction_preserves_all_fields():
 # TC003 — Patient name mismatch detected by extraction Gemini
 # ---------------------------------------------------------------------------
 
-def test_tc003_name_mismatch_sets_flag():
+async def test_tc003_name_mismatch_sets_flag():
     """Gemini returning patient_name_consistent=False → state flag is set."""
     state = make_state({
         "claim_category": "CONSULTATION",
@@ -168,13 +168,17 @@ def test_tc003_name_mismatch_sets_flag():
         patient_name_consistent=False,
         patient_name_mismatch_details="rx.jpg: Rajesh Kumar; bill.jpg: Arjun Mehta",
     )
-    with patch("backend.src.agents.extraction._call_llm", return_value=mock_result):
-        result = extract_documents(state)
+    with patch("backend.src.agents.extraction._call_llm", new_callable=AsyncMock, return_value=mock_result):
+        result = await extract_documents(state)
 
     assert result["patient_name_consistent"] is False
     assert "Rajesh Kumar" in result["patient_name_mismatch_details"]
     assert "Arjun Mehta" in result["patient_name_mismatch_details"]
 
+
+# ---------------------------------------------------------------------------
+# reject_patient_mismatch — sync node, no async needed
+# ---------------------------------------------------------------------------
 
 def test_reject_patient_mismatch_node_returns_rejected():
     """reject_patient_mismatch node produces REJECTED with PATIENT_NAME_MISMATCH reason."""

@@ -84,7 +84,7 @@ def _format_claims_history(claims_history: list[dict]) -> str:
     )
 
 
-def adjudicate_claim(state: ClaimState) -> dict:
+async def adjudicate_claim(state: ClaimState) -> dict:
     """LangGraph node: single Gemini call handles policy, fraud, and final decision."""
     request = state.get("request", {})
     extracted_docs = state.get("extracted_documents", [])
@@ -96,7 +96,7 @@ def adjudicate_claim(state: ClaimState) -> dict:
     claim_category = (request.get("claim_category") or "").upper()
 
     # ------------------------------------------------------------------
-    # Simulated component failure (TC011) — Python guard only
+    # Simulated component failure (TC011) — Python guard, no LLM call
     # ------------------------------------------------------------------
     if request.get("simulate_component_failure"):
         error_logger.warning("adjudicate_claim: simulate_component_failure — skipping Gemini")
@@ -114,7 +114,7 @@ def adjudicate_claim(state: ClaimState) -> dict:
         }
 
     # ------------------------------------------------------------------
-    # Load filtered policy context
+    # Load filtered policy context (sync — memory read)
     # ------------------------------------------------------------------
     try:
         policy_context = get_policy_context(member_id, claim_category)
@@ -124,7 +124,7 @@ def adjudicate_claim(state: ClaimState) -> dict:
         return _graceful_pass(trace, failed_components, claimed_amount, str(e))
 
     # ------------------------------------------------------------------
-    # Build prompt — f-string avoids .format() choking on JSON braces
+    # Build prompt
     # ------------------------------------------------------------------
     prompt = (
         f"{ADJUDICATION_INSTRUCTIONS}\n\n"
@@ -144,18 +144,17 @@ def adjudicate_claim(state: ClaimState) -> dict:
     )
 
     # ------------------------------------------------------------------
-    # LLM call (provider-agnostic)
+    # LLM call (async)
     # ------------------------------------------------------------------
     try:
-        # structured_call returns a pydantic BaseModel; cast to our specific model for typing
-        result = cast(_ClaimDecision, get_llm_service().structured_call(prompt, _ClaimDecision))
+        result = cast(_ClaimDecision, await get_llm_service().structured_call(prompt, _ClaimDecision))
     except Exception as e:
         error_logger.error("adjudicate_claim: Gemini call failed — %s", e)
         failed_components.append("adjudicate")
         return _graceful_pass(trace, failed_components, claimed_amount, str(e))
 
     # ------------------------------------------------------------------
-    # Confidence gate — override optimistic decisions when Gemini is unsure
+    # Confidence gate — override optimistic decisions when Gemini is unsure.
     # REJECTED / MANUAL_REVIEW are always honored regardless of confidence.
     # ------------------------------------------------------------------
     final_decision = result.decision

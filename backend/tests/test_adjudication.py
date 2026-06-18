@@ -1,6 +1,6 @@
 """Tests for adjudicate_claim node — TC011, mocked approve/reject/manual_review."""
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -82,10 +82,10 @@ def _decision(**overrides: Any) -> _ClaimDecision:
 # TC011 — simulate_component_failure (pure Python, no LLM)
 # ---------------------------------------------------------------------------
 
-def test_tc011_simulate_failure_skips_gemini():
+async def test_tc011_simulate_failure_skips_gemini():
     """TC011: flag set → Python short-circuit, no LLM call, APPROVED with low confidence."""
     state = _state({"simulate_component_failure": True})
-    result = adjudicate_claim(state)
+    result = await adjudicate_claim(state)
 
     assert result["decision"] == "APPROVED"
     assert result["approved_amount"] == pytest.approx(1500.0)
@@ -93,10 +93,10 @@ def test_tc011_simulate_failure_skips_gemini():
     assert "policy_check" in result["failed_components"]
 
 
-def test_tc011_trace_shows_skipped():
+async def test_tc011_trace_shows_skipped():
     """TC011: trace must record adjudicate.skipped=True."""
     state = _state({"simulate_component_failure": True})
-    result = adjudicate_claim(state)
+    result = await adjudicate_claim(state)
     assert result["trace"]["adjudicate"]["skipped"] is True
     assert result["trace"]["adjudicate"]["reason"] == "simulate_component_failure"
 
@@ -105,24 +105,24 @@ def test_tc011_trace_shows_skipped():
 # Graceful degradation — LLM failure
 # ---------------------------------------------------------------------------
 
-def test_graceful_pass_on_llm_exception():
+async def test_graceful_pass_on_llm_exception():
     """LLM throws → adjudicate in failed_components, MANUAL_REVIEW at confidence 0.50."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.side_effect = Exception("Gemini timeout")
-        result = adjudicate_claim(state)
+        mock_svc.return_value.structured_call = AsyncMock(side_effect=Exception("Gemini timeout"))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "MANUAL_REVIEW"
     assert result["confidence_score"] == pytest.approx(0.50)
     assert "adjudicate" in result["failed_components"]
 
 
-def test_graceful_pass_on_policy_load_failure():
+async def test_graceful_pass_on_policy_load_failure():
     """Policy file unreadable → adjudicate in failed_components, MANUAL_REVIEW at 0.50."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_policy_context",
                side_effect=FileNotFoundError("policy_terms.json missing")):
-        result = adjudicate_claim(state)
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "MANUAL_REVIEW"
     assert result["confidence_score"] == pytest.approx(0.50)
@@ -133,12 +133,12 @@ def test_graceful_pass_on_policy_load_failure():
 # APPROVED decision
 # ---------------------------------------------------------------------------
 
-def test_approved_returns_all_required_state_keys():
+async def test_approved_returns_all_required_state_keys():
     """Successful APPROVED at high confidence passes through unchanged."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision()
-        result = adjudicate_claim(state)
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision())
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "APPROVED"
     assert result["approved_amount"] == pytest.approx(1350.0)
@@ -151,12 +151,12 @@ def test_approved_returns_all_required_state_keys():
 # Confidence gate
 # ---------------------------------------------------------------------------
 
-def test_approved_low_confidence_overrides_to_manual_review():
+async def test_approved_low_confidence_overrides_to_manual_review():
     """APPROVED with confidence 0.50–0.74 → overridden to MANUAL_REVIEW."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(confidence_score=0.65)
-        result = adjudicate_claim(state)
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(confidence_score=0.65))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "MANUAL_REVIEW"
     assert result["approved_amount"] is None
@@ -164,23 +164,23 @@ def test_approved_low_confidence_overrides_to_manual_review():
     assert result["trace"]["adjudicate"]["gemini_decision"] == "APPROVED"
 
 
-def test_approved_very_low_confidence_overrides_to_rejected():
+async def test_approved_very_low_confidence_overrides_to_rejected():
     """APPROVED with confidence < 0.50 → overridden to REJECTED."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(confidence_score=0.40)
-        result = adjudicate_claim(state)
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(confidence_score=0.40))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "REJECTED"
     assert result["approved_amount"] is None
     assert result["trace"]["adjudicate"]["gemini_decision"] == "APPROVED"
 
 
-def test_rejected_high_confidence_not_upgraded():
+async def test_rejected_high_confidence_not_upgraded():
     """REJECTED is always honored — confidence gate does not upgrade conservative decisions."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="REJECTED",
             approved_amount=None,
             rejection_reasons=["WAITING_PERIOD"],
@@ -189,18 +189,18 @@ def test_rejected_high_confidence_not_upgraded():
             eligible_base=0.0,
             after_discount=0.0,
             copay_amount=0.0,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "REJECTED"
     assert result["trace"]["adjudicate"]["confidence_override"] is None
 
 
-def test_manual_review_low_confidence_not_changed():
+async def test_manual_review_low_confidence_not_changed():
     """MANUAL_REVIEW is always honored regardless of confidence score."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="MANUAL_REVIEW",
             approved_amount=None,
             manual_review=True,
@@ -209,19 +209,19 @@ def test_manual_review_low_confidence_not_changed():
             after_discount=0.0,
             copay_amount=0.0,
             decision_reason="Flagged for review.",
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "MANUAL_REVIEW"
     assert result["trace"]["adjudicate"]["confidence_override"] is None
 
 
-def test_approved_trace_has_calculation_block():
+async def test_approved_trace_has_calculation_block():
     """Trace calculation block must include claimed_amount, copay, final_approved."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision()
-        result = adjudicate_claim(state)
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision())
+        result = await adjudicate_claim(state)
 
     calc = result["trace"]["adjudicate"]["calculation"]
     assert calc["claimed_amount"] == pytest.approx(1500.0)
@@ -233,11 +233,11 @@ def test_approved_trace_has_calculation_block():
 # REJECTED decision
 # ---------------------------------------------------------------------------
 
-def test_rejected_includes_rejection_reasons():
+async def test_rejected_includes_rejection_reasons():
     """REJECTED must propagate rejection_reasons list."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="REJECTED",
             approved_amount=None,
             rejection_reasons=["WAITING_PERIOD"],
@@ -246,19 +246,19 @@ def test_rejected_includes_rejection_reasons():
             eligible_base=0.0,
             after_discount=0.0,
             copay_amount=0.0,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "REJECTED"
     assert result["approved_amount"] is None
     assert "WAITING_PERIOD" in result["rejection_reasons"]
 
 
-def test_rejected_eligibility_date_surfaced():
+async def test_rejected_eligibility_date_surfaced():
     """REJECTED with eligibility_date → date visible in trace."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="REJECTED",
             approved_amount=None,
             rejection_reasons=["INITIAL_WAITING_PERIOD"],
@@ -268,8 +268,8 @@ def test_rejected_eligibility_date_surfaced():
             eligible_base=0.0,
             after_discount=0.0,
             copay_amount=0.0,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["trace"]["adjudicate"]["eligibility_date"] == "2025-05-01"
 
@@ -278,11 +278,11 @@ def test_rejected_eligibility_date_surfaced():
 # MANUAL_REVIEW decision
 # ---------------------------------------------------------------------------
 
-def test_manual_review_has_null_approved_amount():
+async def test_manual_review_has_null_approved_amount():
     """MANUAL_REVIEW must have approved_amount=None."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="MANUAL_REVIEW",
             approved_amount=None,
             manual_review=True,
@@ -292,18 +292,18 @@ def test_manual_review_has_null_approved_amount():
             eligible_base=0.0,
             after_discount=0.0,
             copay_amount=0.0,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "MANUAL_REVIEW"
     assert result["approved_amount"] is None
 
 
-def test_manual_review_fraud_signals_in_trace():
+async def test_manual_review_fraud_signals_in_trace():
     """Fraud signals must appear in the adjudicate trace."""
     state = _state()
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="MANUAL_REVIEW",
             approved_amount=None,
             manual_review=True,
@@ -313,8 +313,8 @@ def test_manual_review_fraud_signals_in_trace():
             eligible_base=0.0,
             after_discount=0.0,
             copay_amount=0.0,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["trace"]["adjudicate"]["fraud_signals"] == ["same-day duplicate claim"]
 
@@ -323,7 +323,7 @@ def test_manual_review_fraud_signals_in_trace():
 # PARTIAL (dental) decision
 # ---------------------------------------------------------------------------
 
-def test_partial_dental_approved_and_rejected_items():
+async def test_partial_dental_approved_and_rejected_items():
     """PARTIAL dental claim must surface approved and rejected dental items in trace."""
     from backend.src.agents.adjudicate import _DentalItem
     state = _state({"claim_category": "DENTAL"})
@@ -331,7 +331,7 @@ def test_partial_dental_approved_and_rejected_items():
     rejected_item = _DentalItem(description="Teeth Whitening", amount=2000.0,
                                 reason="Cosmetic — excluded")
     with patch("backend.src.agents.adjudicate.get_llm_service") as mock_svc:
-        mock_svc.return_value.structured_call.return_value = _decision(
+        mock_svc.return_value.structured_call = AsyncMock(return_value=_decision(
             decision="PARTIAL",
             approved_amount=7200.0,
             dental_approved_items=[approved_item],
@@ -341,8 +341,8 @@ def test_partial_dental_approved_and_rejected_items():
             copay_amount=800.0,
             decision_reason="Root Canal approved. Teeth Whitening excluded (cosmetic).",
             confidence_score=0.88,
-        )
-        result = adjudicate_claim(state)
+        ))
+        result = await adjudicate_claim(state)
 
     assert result["decision"] == "PARTIAL"
     approved = result["trace"]["adjudicate"]["dental_approved"]

@@ -1,12 +1,12 @@
-"""Centralized LLM service — provider-agnostic interface with factory pattern.
+"""Centralized LLM service — provider-agnostic async interface with factory pattern.
 
 Usage:
     from backend.src.services.llm import get_llm_service
 
     llm = get_llm_service("extraction")     # multimodal OCR cascade
     llm = get_llm_service("adjudication")   # reasoning cascade
-    result = llm.structured_call(prompt, OutputSchema)
-    result = llm.structured_call(prompt, OutputSchema, content_blocks=[...])  # multimodal
+    result = await llm.structured_call(prompt, OutputSchema)
+    result = await llm.structured_call(prompt, OutputSchema, content_blocks=[...])
 
 Model cascade: on HTTP 429 (rate limit), the service automatically retries with the next
 model in the cascade. Rate-limited models are tracked globally — if a model is exhausted
@@ -20,7 +20,6 @@ To add a new provider:
     3. Set LLM_PROVIDER=<key> in your .env file.
 """
 
-import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Type, cast
@@ -37,7 +36,7 @@ class LLMService(ABC):
     """Abstract base — all agents call through this interface."""
 
     @abstractmethod
-    def structured_call(
+    async def structured_call(
         self,
         prompt: str,
         output_schema: Type[BaseModel],
@@ -81,9 +80,9 @@ class GeminiService(LLMService):
     LangChain-backed Gemini provider with per-use-case model cascades.
 
     Models are tried in order. On HTTP 429 the model is added to a shared
-    exhausted set and the next model in the cascade is tried. Because the set
-    is class-level, a model that is rate-limited in one cascade is automatically
-    skipped in all other cascades for the same 24-hour window.
+    exhausted dict and the next model in the cascade is tried. Because the dict
+    is class-level and asyncio is single-threaded (no await between the
+    membership check and the dict write), there is no concurrent access risk.
 
     Update the cascade lists below as new Gemini models become available.
     """
@@ -114,16 +113,16 @@ class GeminiService(LLMService):
 
     # Global exhausted-model registry — shared across all cascade instances.
     # Key: model name, Value: timestamp when the model was first rate-limited.
-    # Models are re-admitted after _RESET_AFTER_SECONDS.
+    # Safe without a lock: asyncio is single-threaded and there is no await between
+    # the membership check and the dict write, so no concurrent coroutine can interleave.
     _exhausted_models: dict[str, float] = {}
-    _lock: threading.Lock = threading.Lock()
 
     def __init__(self, models: list[str], cascade_key: str = "default", temperature: float = 0):
         self._models = models
         self._cascade_key = cascade_key
         self._temperature = temperature
 
-    def structured_call(
+    async def structured_call(
         self,
         prompt: str,
         output_schema: Type[BaseModel],
@@ -132,25 +131,23 @@ class GeminiService(LLMService):
         content_blocks: list[dict] | None = None,
     ) -> BaseModel:
         # Expire models whose 24-hour window has passed.
-        with GeminiService._lock:
-            now = time.time()
-            recovered = [
-                m for m, t in GeminiService._exhausted_models.items()
-                if now - t >= GeminiService._RESET_AFTER_SECONDS
-            ]
-            for m in recovered:
-                del GeminiService._exhausted_models[m]
-                error_logger.info("LLM: model=%s quota reset after 24h", m)
+        now = time.time()
+        recovered = [
+            m for m, t in GeminiService._exhausted_models.items()
+            if now - t >= GeminiService._RESET_AFTER_SECONDS
+        ]
+        for m in recovered:
+            del GeminiService._exhausted_models[m]
+            error_logger.info("LLM: model=%s quota reset after 24h", m)
 
         last_error: Exception | None = None
 
         for model in self._models:
-            with GeminiService._lock:
-                if model in GeminiService._exhausted_models:
-                    continue  # skip globally rate-limited models across all cascades
+            if model in GeminiService._exhausted_models:
+                continue
 
             try:
-                result = self._invoke(
+                result = await self._invoke(
                     model, prompt, output_schema,
                     chat_history=chat_history,
                     content_blocks=content_blocks,
@@ -164,15 +161,14 @@ class GeminiService(LLMService):
 
             except Exception as exc:
                 if _is_rate_limited(exc):
-                    with GeminiService._lock:
-                        if model not in GeminiService._exhausted_models:
-                            GeminiService._exhausted_models[model] = time.time()
-                            available = [m for m in self._models if m not in GeminiService._exhausted_models]
-                            error_logger.warning(
-                                "LLM.structured_call: rate limited on model=%s (cascade=%s) — "
-                                "added to global exhausted set; remaining in this cascade: %s",
-                                model, self._cascade_key, available,
-                            )
+                    if model not in GeminiService._exhausted_models:
+                        GeminiService._exhausted_models[model] = time.time()
+                        available = [m for m in self._models if m not in GeminiService._exhausted_models]
+                        error_logger.warning(
+                            "LLM.structured_call: rate limited on model=%s (cascade=%s) — "
+                            "added to global exhausted set; remaining in this cascade: %s",
+                            model, self._cascade_key, available,
+                        )
                     last_error = exc
                     continue
                 raise  # non-429 errors bubble up immediately
@@ -181,7 +177,7 @@ class GeminiService(LLMService):
             f"All models in cascade '{self._cascade_key}' exhausted: {self._models}"
         )
 
-    def _invoke(
+    async def _invoke(
         self,
         model: str,
         prompt: str,
@@ -217,7 +213,7 @@ class GeminiService(LLMService):
             "LLM._invoke: model=%s schema=%s multimodal=%s",
             model, output_schema.__name__, content_blocks is not None,
         )
-        return cast(BaseModel, llm.invoke(messages))
+        return cast(BaseModel, await llm.ainvoke(messages))
 
 
 # ---------------------------------------------------------------------------

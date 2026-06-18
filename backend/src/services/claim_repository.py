@@ -1,29 +1,37 @@
-"""Claim repository — database reads and response mapping for stored claims."""
+"""Claim repository — async database reads and response mapping for stored claims."""
 
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.src.config.logger_config import error_logger
 from backend.src.schemas.claim import ClaimResponse
 from backend.src.services.file_storage import get_file_url
 
 
-def get_claim_by_id(claim_id: str, db) -> ClaimResponse:
+async def get_claim_by_id(claim_id: str, db: AsyncSession) -> ClaimResponse:
     from backend.src.models.claim import Claim
     error_logger.info("get_claim_by_id: claim_id=%s", claim_id)
-    claim = db.query(Claim).filter(Claim.id == claim_id).first()
+    result = await db.execute(
+        select(Claim).options(selectinload(Claim.documents)).filter(Claim.id == claim_id)
+    )
+    claim = result.scalar_one_or_none()
     if not claim:
         error_logger.warning("get_claim_by_id: not found claim_id=%s", claim_id)
         raise HTTPException(status_code=404, detail=f"Claim {claim_id} not found.")
     return _db_claim_to_response(claim)
 
 
-def list_member_claims(member_id: str | None, db) -> list[dict]:
+async def list_member_claims(member_id: str | None, db: AsyncSession) -> list[dict]:
     from backend.src.models.claim import Claim
     error_logger.info("list_member_claims: member_id=%s", member_id)
-    query = db.query(Claim)
+    stmt = select(Claim).options(selectinload(Claim.documents))
     if member_id:
-        query = query.filter(Claim.member_id == member_id)
-    claims = query.order_by(Claim.submitted_at.desc()).limit(100).all()
+        stmt = stmt.filter(Claim.member_id == member_id)
+    stmt = stmt.order_by(Claim.submitted_at.desc()).limit(100)
+    result = await db.execute(stmt)
+    claims = result.scalars().all()
     error_logger.info("list_member_claims: returning %d claim(s)", len(claims))
     return [_db_claim_to_dict(c) for c in claims]
 
