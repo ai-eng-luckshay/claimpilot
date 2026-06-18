@@ -39,3 +39,6 @@ backend/uploads/
 
 # AI Coding Helper
 .claude
+
+# Planning docs — internal notes, not part of the submission
+docs/plan.md

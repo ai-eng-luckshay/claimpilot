@@ -68,10 +68,10 @@ Six-node LangGraph pipeline with two Gemini calls per claim:
 │           └── dead_letter.py          # DLQ stub (NoOpDLQ)
 ├── frontend/
 │   └── app.py                          # Streamlit UI
-├── backend/scripts/
+├── scripts/
 │   └── clear_db.py                     # utility: wipe claims table (--confirm to run)
 ├── docs/
-│   ├── plan.md
+│   ├── architecture.md
 │   ├── design_decisions.md
 │   ├── assumptions.md
 │   └── failure_handling.md
@@ -156,14 +156,19 @@ pytest backend/tests/ -v
 
 ```bash
 # Preview what clear_db.py would delete (dry run)
-python -m backend.scripts.clear_db
+python -m scripts.clear_db
 
 # Actually delete all claims + documents
-python -m backend.scripts.clear_db --confirm
+python -m scripts.clear_db --confirm
 ```
 
 ## Docs
 
-- [Project Plan](docs/plan.md)
+- [Architecture](docs/architecture.md)
 - [Design Decisions](docs/design_decisions.md)
 - [Assumptions](docs/assumptions.md)
+- [Failure Handling](docs/failure_handling.md)
+
+## Uptime
+
+[https://crjhkrx6.status.cron-job.org/](https://crjhkrx6.status.cron-job.org/)
